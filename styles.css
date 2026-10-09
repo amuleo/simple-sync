@@ -1,6 +1,6 @@
 /* ============================================================
    Simple SYNC — Styles
-   Minimal, native-first, mobile-friendly, RTL-aware.
+   Mobile-first with desktop enhancements.
    ============================================================ */
 
 /* ---------- RTL helper ---------- */
@@ -16,24 +16,40 @@
 }
 
 /* ============================================================
-   Modal header
+   Native modal title + back button
    ============================================================ */
 
-.simple-sync-header {
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--background-modifier-border);
+.simple-sync-modal .modal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.simple-sync-header h2 {
-  margin: 0 0 4px 0;
-  font-size: 20px;
-}
-
-.simple-sync-subtitle {
-  margin: 0;
-  font-size: 13px;
+.simple-sync-back-btn {
+  background: transparent;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
   color: var(--text-muted);
+  padding: 0 6px;
+  border-radius: var(--radius-s);
+  transition: background 0.15s ease, color 0.15s ease;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.simple-sync-back-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.simple-sync-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ============================================================
@@ -210,7 +226,7 @@
   font-family: var(--font-monospace);
 }
 
-/* Full-width restore button — 25% shorter than the previous size */
+/* Full-width restore button */
 .simple-sync-restore-btn {
   width: 100%;
   padding: 6px 14px;
@@ -302,14 +318,7 @@
    ============================================================ */
 
 .simple-sync-confirm {
-  text-align: center;
-  padding: 16px 10px;
-}
-
-.simple-sync-confirm-icon {
-  font-size: 48px;
-  margin: 8px 0 16px;
-  line-height: 1;
+  padding: 4px 4px 8px;
 }
 
 .simple-sync-confirm-message {
@@ -318,6 +327,7 @@
   line-height: 1.6;
   word-break: break-word;
   font-size: 14px;
+  text-align: center;
 }
 
 .simple-sync-confirm-message p {
@@ -342,24 +352,18 @@
 }
 
 /* ============================================================
-   Progress modal — extra padding so nothing touches screen edges
+   Progress modal
    ============================================================ */
 
 .simple-sync-progress-modal {
   max-width: min(420px, calc(100vw - 32px));
   width: 100%;
   box-sizing: border-box;
+  z-index: var(--layer-modal);
 }
 
 .simple-sync-progress-modal .modal-content {
   padding: 20px 22px 22px;
-}
-
-.simple-sync-progress-title {
-  margin: 0 0 20px 0;
-  font-size: 17px;
-  font-weight: 600;
-  text-align: center;
 }
 
 .simple-sync-progress-step {
@@ -466,7 +470,16 @@
 }
 
 /* ============================================================
-   Mobile (≤ 600px)
+   Toggle disabled
+   ============================================================ */
+
+.simple-sync-toggle-disabled .checkbox-container {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Mobile (≤ 600px) — priority
    ============================================================ */
 
 @media (max-width: 600px) {
@@ -508,10 +521,14 @@
   .simple-sync-progress-modal .modal-content {
     padding: 18px 18px 20px;
   }
+
+  .simple-sync-back-btn {
+    font-size: 22px;
+  }
 }
 
 /* ============================================================
-   Desktop (≥ 700px)
+   Desktop (≥ 700px) — enhancements
    ============================================================ */
 
 @media (min-width: 700px) {
@@ -525,5 +542,49 @@
 
   .simple-sync-list-item {
     padding: 14px 18px;
+  }
+
+  /* Wider modals on desktop */
+  .simple-sync-modal {
+    min-width: 480px;
+    max-width: 640px;
+  }
+
+  /* Guide can be wider */
+  .simple-sync-modal:has(.simple-sync-guide-body) {
+    max-width: 720px;
+  }
+
+  /* Hover effects are more noticeable on desktop */
+  .simple-sync-tab:hover {
+    color: var(--text-normal);
+  }
+
+  .simple-sync-list-item:hover {
+    background: var(--background-modifier-hover);
+  }
+
+  /* Two-column layout for confirm buttons on desktop */
+  .simple-sync-confirm-buttons button {
+    flex: 1;
+    width: auto;
+  }
+
+  .simple-sync-guide-body {
+    max-height: 520px;
+  }
+}
+
+/* ============================================================
+   Large desktop (≥ 1100px)
+   ============================================================ */
+
+@media (min-width: 1100px) {
+  .simple-sync-modal {
+    max-width: 680px;
+  }
+
+  .simple-sync-modal:has(.simple-sync-guide-body) {
+    max-width: 780px;
   }
 }
