@@ -1,4 +1,4 @@
-import { Vault, TFile, normalizePath } from 'obsidian';
+import { Vault, normalizePath } from 'obsidian';
 import JSZip from 'jszip';
 import { GitHubAPI } from './github-api';
 import { SimpleSyncSettings } from './settings';
@@ -6,8 +6,7 @@ import { toJalali, formatJalaliPath, formatJalaliReadable } from './jalali';
 
 const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
-
-const SYSTEM_PREFIXES = ['.obsidian/', '.trash/', '.git/'];
+const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
 export type ProgressStep = 'scanning' | 'creating' | 'uploading' | 'snapshotting' | 'downloading' | 'extracting' | 'localCopy';
 export type ProgressCallback = (step: ProgressStep, percent: number) => void;
@@ -18,6 +17,7 @@ export interface BackupEntry {
   description: string;
   zipPath: string;
   readmePath: string;
+  zipName: string;
   size: number;
 }
 
@@ -49,28 +49,35 @@ export class BackupManager {
     onProgress: ProgressCallback
   ): Promise<BackupResult> {
     onProgress('scanning', 3);
-    const files = this.collectFiles(includeSystem);
 
-    if (files.length === 0) throw new Error('No files to back up');
+    // Walk the raw filesystem via the adapter so hidden folders
+    // (.obsidian, .trash, .git, etc.) are included.
+    const paths = await this.collectAllPaths(includeSystem);
+
+    if (paths.length === 0) throw new Error('No files to back up');
 
     onProgress('creating', 10);
     const zip = new JSZip();
     let totalBytes = 0;
     let processed = 0;
+    let succeeded = 0;
 
-    for (const file of files) {
+    for (const path of paths) {
       try {
-        const content = await this.vault.readBinary(file);
-        zip.file(file.path, content);
+        const content = await this.vault.adapter.readBinary(path);
+        zip.file(path, content);
         totalBytes += content.byteLength;
+        succeeded++;
       } catch (e) {
-        console.warn('[Simple SYNC] read failed:', file.path, e);
+        console.warn('[Simple SYNC] read failed:', path, e);
       }
       processed++;
-      if (processed % 15 === 0 || processed === files.length) {
-        onProgress('creating', 10 + Math.floor((processed / files.length) * 40));
+      if (processed % 15 === 0 || processed === paths.length) {
+        onProgress('creating', 10 + Math.floor((processed / paths.length) * 40));
       }
     }
+
+    if (succeeded === 0) throw new Error('No files could be read');
 
     onProgress('creating', 52);
     const blob = await zip.generateAsync({
@@ -79,24 +86,27 @@ export class BackupManager {
       compressionOptions: { level: 6 },
     });
 
-    // Folder name (Jalali date with random 3-digit suffix on collision)
+    // Folder name
     const now = new Date();
     const datePath = formatJalaliPath(toJalali(now));
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
     let folder = baseFolder;
-
     if (await this.folderExists(folder)) {
       folder = `${baseFolder}-${this.randomSuffix()}`;
     }
 
-    const readme = this.buildReadme(description, now, files.length, totalBytes);
+    // ZIP filename based on folder name
+    const folderName = folder.split('/').pop() || 'backup';
+    const zipName = this.makeZipFileName(folderName);
+
+    const readme = this.buildReadme(description, now, succeeded, totalBytes);
     const readmeBytes = new TextEncoder().encode(readme);
 
     onProgress('uploading', 58);
     const zipBytes = await blob.arrayBuffer();
     await this.github.commitFiles(
       [
-        { path: `${folder}/backup.zip`, content: zipBytes },
+        { path: `${folder}/${zipName}`, content: zipBytes },
         { path: `${folder}/README.md`, content: readmeBytes.buffer },
       ],
       `Backup ${datePath} — ${description || 'no description'}`
@@ -105,11 +115,11 @@ export class BackupManager {
     onProgress('uploading', 88);
 
     onProgress('localCopy', 92);
-    const localPath = await this.saveLocalMirror(folder, blob, readme);
+    const localPath = await this.saveLocalMirror(folder, zipName, blob, readme);
 
     onProgress('localCopy', 100);
 
-    return { folder, localPath, fileCount: files.length, size: totalBytes };
+    return { folder, localPath, fileCount: succeeded, size: totalBytes };
   }
 
   // ============================================================
@@ -126,7 +136,7 @@ export class BackupManager {
       const folderName = parts.slice(0, -1).join('/');
       const fileName = parts[parts.length - 1];
       const entry = folders.get(folderName) || {};
-      if (fileName === 'backup.zip') entry.zip = f;
+      if (fileName.endsWith('.zip')) entry.zip = f;
       if (fileName === 'README.md') entry.readme = f;
       folders.set(folderName, entry);
     }
@@ -142,12 +152,14 @@ export class BackupManager {
         }
       } catch {}
 
+      const lastSegment = folderPath.split('/').pop() || folderPath;
       result.push({
         folder: folderPath,
-        date: folderPath.split('/').pop() || folderPath,
+        date: lastSegment,
         description,
         zipPath: entry.zip.path,
         readmePath: entry.readme?.path || '',
+        zipName: entry.zip.path.split('/').pop() || 'backup.zip',
         size: entry.zip.size,
       });
     }
@@ -191,32 +203,36 @@ export class BackupManager {
   // ============================================================
 
   private async snapshotCurrentVault(onProgress: ProgressCallback): Promise<string> {
-    const files = this.collectFiles(true);
+    const paths = await this.collectAllPaths(true);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const folder = `${LOCAL_BACKUP_FOLDER}/${SNAPSHOT_PREFIX}-${stamp}`;
 
     let count = 0;
-    for (const file of files) {
+    for (const path of paths) {
       try {
-        const content = await this.vault.readBinary(file);
-        await this.writeToVault(`${folder}/${file.path}`, content);
+        const content = await this.vault.adapter.readBinary(path);
+        await this.writeToVault(`${folder}/${path}`, content);
         count++;
       } catch {}
-      if (count % 15 === 0 && files.length > 0) {
-        onProgress('snapshotting', 3 + Math.floor((count / files.length) * 22));
+      if (count % 15 === 0 && paths.length > 0) {
+        onProgress('snapshotting', 3 + Math.floor((count / paths.length) * 22));
       }
     }
     onProgress('snapshotting', 25);
     return folder;
   }
 
-  private async saveLocalMirror(folder: string, blob: Blob, readme: string): Promise<string> {
-    const parts = folder.split('/');
-    const dateFolder = parts.slice(-1)[0] || 'backup';
+  private async saveLocalMirror(
+    folder: string,
+    zipName: string,
+    blob: Blob,
+    readme: string
+  ): Promise<string> {
+    const dateFolder = folder.split('/').pop() || 'backup';
     const localDir = `${LOCAL_BACKUP_FOLDER}/${dateFolder}`;
 
     const zipBuffer = await blob.arrayBuffer();
-    await this.writeToVault(`${localDir}/backup.zip`, zipBuffer);
+    await this.writeToVault(`${localDir}/${zipName}`, zipBuffer);
 
     const readmeBytes = new TextEncoder().encode(readme);
     await this.writeToVault(`${localDir}/README.md`, readmeBytes.buffer);
@@ -225,31 +241,61 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Helpers
+  // Path walking (adapter-based, includes hidden)
   // ============================================================
 
-  private randomSuffix(): string {
-    return String(Math.floor(Math.random() * 900) + 100);
+  private async collectAllPaths(includeSystem: boolean): Promise<string[]> {
+    const out: string[] = [];
+
+    const walk = async (folder: string): Promise<void> => {
+      let listing;
+      try {
+        listing = await this.vault.adapter.list(folder);
+      } catch {
+        return;
+      }
+
+      for (const filePath of listing.files) {
+        if (this.isInsideLocalBackup(filePath)) continue;
+        if (!includeSystem && this.isSystemPath(filePath)) continue;
+        out.push(filePath);
+      }
+
+      for (const subfolder of listing.folders) {
+        if (this.isInsideLocalBackup(subfolder)) continue;
+        await walk(subfolder);
+      }
+    };
+
+    await walk('');
+    return out;
+  }
+
+  private isInsideLocalBackup(path: string): boolean {
+    return (
+      path === LOCAL_BACKUP_FOLDER ||
+      path.startsWith(LOCAL_BACKUP_FOLDER + '/')
+    );
   }
 
   private isSystemPath(path: string): boolean {
-    if (SYSTEM_PREFIXES.some((p) => path.startsWith(p))) return true;
+    for (const folder of SYSTEM_FOLDERS) {
+      if (path === folder || path.startsWith(folder + '/')) return true;
+    }
     const segments = path.split('/');
     return segments.some((s) => s.startsWith('.') && s !== '.' && s !== '..');
   }
 
-  private collectFiles(includeSystem: boolean): TFile[] {
-    const out: TFile[] = [];
-    const allFiles = this.vault.getFiles();
-    for (const file of allFiles) {
-      // Always exclude the backup folder itself
-      if (file.path === LOCAL_BACKUP_FOLDER || file.path.startsWith(LOCAL_BACKUP_FOLDER + '/')) {
-        continue;
-      }
-      if (!includeSystem && this.isSystemPath(file.path)) continue;
-      out.push(file);
-    }
-    return out;
+  private makeZipFileName(folderName: string): string {
+    // "1405.01.15-641" → digits only → "14050115641"
+    const digits = folderName.replace(/\D/g, '');
+    if (!digits) return 'backup.zip';
+    const prefix = (this.settings.backupFolder || 'backup').replace(/\W/g, '');
+    return `${prefix || 'backup'}${digits}.zip`;
+  }
+
+  private randomSuffix(): string {
+    return String(Math.floor(Math.random() * 900) + 100);
   }
 
   private async folderExists(folder: string): Promise<boolean> {
@@ -260,6 +306,10 @@ export class BackupManager {
       return false;
     }
   }
+
+  // ============================================================
+  // README / Description
+  // ============================================================
 
   private buildReadme(description: string, date: Date, fileCount: number, totalBytes: number): string {
     return [
@@ -288,33 +338,34 @@ export class BackupManager {
     return '';
   }
 
+  // ============================================================
+  // Write to vault (adapter-based, works with hidden folders)
+  // ============================================================
+
   private async writeToVault(path: string, content: ArrayBuffer): Promise<void> {
     const normalized = normalizePath(path);
-    const existing = this.vault.getAbstractFileByPath(normalized);
-    if (existing instanceof TFile) {
-      await this.vault.modifyBinary(existing, content);
-      return;
-    }
 
+    // Ensure parent folders exist
     const parts = normalized.split('/');
     parts.pop();
     let current = '';
     for (const part of parts) {
       current = current ? `${current}/${part}` : part;
-      if (!this.vault.getAbstractFileByPath(current)) {
-        try { await this.vault.createFolder(current); } catch {}
+      try {
+        const exists = await this.vault.adapter.exists(current);
+        if (!exists) {
+          await this.vault.adapter.mkdir(current);
+        }
+      } catch {
+        // ignore
       }
     }
 
     try {
-      await this.vault.createBinary(normalized, content);
-    } catch (e: any) {
-      if (e.message?.includes('already exists')) {
-        const f = this.vault.getAbstractFileByPath(normalized);
-        if (f instanceof TFile) await this.vault.modifyBinary(f, content);
-      } else {
-        throw e;
-      }
+      await this.vault.adapter.writeBinary(normalized, content);
+    } catch (e) {
+      console.warn('[Simple SYNC] write failed:', normalized, e);
+      throw e;
     }
   }
 
