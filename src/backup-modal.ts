@@ -19,7 +19,7 @@ export class BackupModal extends Modal {
   backupsError: string | null = null;
 
   private statsEl: HTMLElement | null = null;
-  private statsLoading = false;
+  private statsToken = 0;
 
   constructor(app: App, plugin: SimpleSyncPlugin) {
     super(app);
@@ -101,7 +101,6 @@ export class BackupModal extends Modal {
       );
 
     this.statsEl = parent.createEl('div', { cls: 'simple-sync-stats-line' });
-    this.statsEl.setText(t('backup.stats', { count: '…', size: '…' }));
     this.refreshStats();
 
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
@@ -113,23 +112,27 @@ export class BackupModal extends Modal {
   }
 
   private async refreshStats() {
-    if (this.statsLoading || !this.statsEl) return;
-    this.statsLoading = true;
-
+    if (!this.statsEl) return;
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
     const el = this.statsEl;
-    el.setText(t('backup.stats', { count: '…', size: '…' }));
+    const token = ++this.statsToken;
+
+    // Show loading text immediately
+    el.setText(t('backup.stats.calculating'));
 
     try {
-      const { count, size } = await this.manager.countFilesAndSize(this.includeSystem);
-      // Guard: user may have toggled again
-      if (el === this.statsEl) {
-        el.setText(t('backup.stats', { count, size: BackupManager.formatBytes(size) }));
-      }
+      const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
+      // Ignore stale results
+      if (token !== this.statsToken || el !== this.statsEl) return;
+      el.setText(
+        t('backup.stats', {
+          count: files,
+          folders,
+          size: BackupManager.formatBytes(size),
+        })
+      );
     } catch {
-      if (el === this.statsEl) el.setText('');
-    } finally {
-      this.statsLoading = false;
+      if (token === this.statsToken && el === this.statsEl) el.setText('');
     }
   }
 
@@ -226,8 +229,7 @@ export class BackupModal extends Modal {
       cls: 'simple-sync-list-meta',
     });
 
-    const actions = item.createEl('div', { cls: 'simple-sync-list-actions' });
-    const restoreBtn = actions.createEl('button', {
+    const restoreBtn = item.createEl('button', {
       text: t('restore.button'),
       cls: 'mod-cta simple-sync-restore-btn',
     });
@@ -302,6 +304,6 @@ export class BackupModal extends Modal {
   }
 
   onClose() {
-    this.contentEl.empty();
+    this.contentEl.clear();
   }
 }
