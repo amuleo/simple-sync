@@ -8,16 +8,20 @@ const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
 const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
-// GitHub Contents API limit is 100 MB per file.
-// Use 88 MB to leave headroom (base64 overhead, JSON wrapping, etc.)
 const MAX_SINGLE_FILE_BYTES = 88 * 1024 * 1024;
 const PART_SIZE_BYTES = 80 * 1024 * 1024;
 
 // ============================================================
-// fflate level type
+// fflate literal types
 // ============================================================
 
 type FflateLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+type FflateMem = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+
+interface FflateZipOptions {
+  level: FflateLevel;
+  mem: FflateMem;
+}
 
 // ============================================================
 // Device profile
@@ -32,6 +36,7 @@ interface DeviceProfile {
   statConcurrency: number;
   folderWalkConcurrency: number;
   compressionLevel: FflateLevel;
+  compressionMem: FflateMem;
   uploadConcurrency: number;
 }
 
@@ -51,17 +56,20 @@ function detectDeviceProfile(): DeviceProfile {
   let statConcurrency = 64;
   let folderWalkConcurrency = 24;
   let compressionLevel: FflateLevel = 6;
+  let compressionMem: FflateMem = isMobile ? 6 : 8;
   let uploadConcurrency = 4;
 
   if (memory <= 2) {
     readConcurrency = 6; writeConcurrency = 6; statConcurrency = 24;
-    folderWalkConcurrency = 8; compressionLevel = 4; uploadConcurrency = 2;
+    folderWalkConcurrency = 8; compressionLevel = 4;
+    compressionMem = 4; uploadConcurrency = 2;
   } else if (memory <= 4) {
     readConcurrency = isMobile ? 12 : 20;
     writeConcurrency = isMobile ? 10 : 16;
     statConcurrency = isMobile ? 48 : 80;
     folderWalkConcurrency = isMobile ? 20 : 32;
     compressionLevel = isMobile ? 5 : 6;
+    compressionMem = isMobile ? 5 : 6;
     uploadConcurrency = isMobile ? 2 : 4;
   } else if (memory <= 8) {
     readConcurrency = isMobile ? 20 : 32;
@@ -69,10 +77,12 @@ function detectDeviceProfile(): DeviceProfile {
     statConcurrency = isMobile ? 96 : 128;
     folderWalkConcurrency = isMobile ? 32 : 48;
     compressionLevel = 6;
+    compressionMem = 6;
     uploadConcurrency = isMobile ? 3 : 5;
   } else {
     readConcurrency = 32; writeConcurrency = 24; statConcurrency = 128;
-    folderWalkConcurrency = 48; compressionLevel = 6; uploadConcurrency = 6;
+    folderWalkConcurrency = 48; compressionLevel = 6;
+    compressionMem = 8; uploadConcurrency = 6;
   }
 
   const maxIO = cores * 2;
@@ -82,7 +92,8 @@ function detectDeviceProfile(): DeviceProfile {
   return {
     memory, cores, isMobile,
     readConcurrency, writeConcurrency, statConcurrency,
-    folderWalkConcurrency, compressionLevel, uploadConcurrency,
+    folderWalkConcurrency, compressionLevel, compressionMem,
+    uploadConcurrency,
   };
 }
 
@@ -203,15 +214,19 @@ async function statSize(vault: Vault, path: string): Promise<number> {
 }
 
 // ============================================================
-// fflate wrappers
+// fflate wrappers — use `any` at the boundary to avoid type-strictness issues
+// (the internal values are already validated as literal unions)
 // ============================================================
 
 function fflateZipAsync(
   files: Record<string, Uint8Array>,
-  opts: { level: FflateLevel; mem: number }
+  opts: FflateZipOptions
 ): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
-    fflateZip(files, opts, (err, data) => err ? reject(err) : resolve(data));
+    (fflateZip as any)(files, opts as any, (err: any, data: Uint8Array) => {
+      if (err) reject(err);
+      else resolve(data);
+    });
   });
 }
 
@@ -449,7 +464,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Backup (with large-file support)
+  // Backup
   // ============================================================
 
   async createBackup(
@@ -465,7 +480,7 @@ export class BackupManager {
 
     const hasSystemFiles = includeSystem && paths.some((p) => this.isSystemPath(p));
 
-    // 2. Read files in parallel
+    // 2. Read files
     onProgress('creating', 10);
     const fileMap: Record<string, Uint8Array> = {};
     let totalBytes = 0;
@@ -503,7 +518,7 @@ export class BackupManager {
     try {
       zipBytes = await fflateZipAsync(fileMap, {
         level: DEVICE.compressionLevel,
-        mem: DEVICE.isMobile ? 6 : 8,
+        mem: DEVICE.compressionMem,
       });
     } catch (e: any) {
       throw new Error(`ZIP creation failed: ${e.message}`);
@@ -511,10 +526,9 @@ export class BackupManager {
     if (isCancelled?.()) throw new Error('Cancelled');
     onProgress('creating', 60);
 
-    // Free memory
     for (const k of Object.keys(fileMap)) delete fileMap[k];
 
-    // 4. Folder name & file name
+    // 4. Folder + file name
     const now = new Date();
     const datePath = formatJalaliPath(toJalali(now));
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
@@ -527,7 +541,7 @@ export class BackupManager {
 
     const zipSize = zipBytes.byteLength;
 
-    // 5. Single-file path
+    // 5. Single-file
     if (zipSize <= MAX_SINGLE_FILE_BYTES) {
       const readme = this.buildReadme(
         description, now, succeeded, totalBytes, hasSystemFiles, 1, zipSize
@@ -557,15 +571,14 @@ export class BackupManager {
       this.invalidateStats();
 
       return {
-        folder,
-        localPath,
+        folder, localPath,
         fileCount: succeeded,
         size: zipSize,
         parts: 1,
       };
     }
 
-    // 6. Multi-part path
+    // 6. Multi-part
     const parts = splitBytes(zipBytes, PART_SIZE_BYTES);
     const partCount = parts.length;
 
@@ -614,8 +627,7 @@ export class BackupManager {
     this.invalidateStats();
 
     return {
-      folder,
-      localPath,
+      folder, localPath,
       fileCount: succeeded,
       size: zipSize,
       parts: partCount,
