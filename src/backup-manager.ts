@@ -2,7 +2,7 @@ import { Vault, TFile, normalizePath } from 'obsidian';
 import JSZip from 'jszip';
 import { GitHubAPI } from './github-api';
 import { SimpleSyncSettings } from './settings';
-import { formatJalaliPath, jalaliTimestampSuffix, formatJalaliReadable } from './jalali';
+import { toJalali, formatJalaliPath, jalaliTimestampSuffix, formatJalaliReadable } from './jalali';
 
 const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
@@ -78,7 +78,8 @@ export class BackupManager {
 
     // 3. Folder name (Jalali date with collision-safe suffix)
     const now = new Date();
-    const datePath = formatJalaliPath(now);
+    const jalali = toJalali(now);
+    const datePath = formatJalaliPath(jalali);
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
     let folder = baseFolder;
     let attempts = 0;
@@ -211,7 +212,7 @@ export class BackupManager {
         await this.writeToVault(`${folder}/${file.path}`, content);
         count++;
       } catch {}
-      if (count % 15 === 0) {
+      if (count % 15 === 0 && files.length > 0) {
         onProgress('snapshotting', 3 + Math.floor((count / files.length) * 22));
       }
     }
