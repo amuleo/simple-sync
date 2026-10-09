@@ -8,10 +8,101 @@ const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
 const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
-const READ_CONCURRENCY_MAX = 32;
-const WRITE_CONCURRENCY_MAX = 24;
-const STAT_CONCURRENCY_MAX = 128;
-const FOLDER_WALK_CONCURRENCY_MAX = 48;
+// ============================================================
+// Device capability detection (safe, no crash)
+// ============================================================
+
+interface DeviceProfile {
+  memory: number;      // GB
+  cores: number;
+  isMobile: boolean;
+  readConcurrency: number;
+  writeConcurrency: number;
+  statConcurrency: number;
+  folderWalkConcurrency: number;
+  compressionLevel: number; // JSZip compression level
+}
+
+function detectDeviceProfile(): DeviceProfile {
+  let memory = 4;
+  let cores = 4;
+  let isMobile = false;
+
+  try {
+    const nav: any = (typeof navigator !== 'undefined') ? navigator : {};
+    if (typeof nav.deviceMemory === 'number') memory = nav.deviceMemory;
+    if (typeof nav.hardwareConcurrency === 'number') cores = nav.hardwareConcurrency;
+    if (typeof document !== 'undefined') {
+      isMobile = document.body.hasClass('is-mobile');
+    }
+  } catch {
+    // defaults
+  }
+
+  let readConcurrency: number;
+  let writeConcurrency: number;
+  let statConcurrency: number;
+  let folderWalkConcurrency: number;
+  let compressionLevel: number;
+
+  if (memory <= 2) {
+    // Low-end device
+    readConcurrency = 6;
+    writeConcurrency = 6;
+    statConcurrency = 24;
+    folderWalkConcurrency = 8;
+    compressionLevel = 4;
+  } else if (memory <= 4) {
+    // Mid-range
+    readConcurrency = isMobile ? 12 : 18;
+    writeConcurrency = isMobile ? 10 : 16;
+    statConcurrency = isMobile ? 48 : 80;
+    folderWalkConcurrency = isMobile ? 20 : 32;
+    compressionLevel = isMobile ? 5 : 6;
+  } else if (memory <= 8) {
+    // High-end
+    readConcurrency = isMobile ? 20 : 28;
+    writeConcurrency = isMobile ? 16 : 22;
+    statConcurrency = isMobile ? 80 : 120;
+    folderWalkConcurrency = isMobile ? 32 : 44;
+    compressionLevel = 6;
+  } else {
+    // Workstation
+    readConcurrency = 32;
+    writeConcurrency = 24;
+    statConcurrency = 128;
+    folderWalkConcurrency = 48;
+    compressionLevel = 6;
+  }
+
+  // Never exceed 2× cores for I/O-bound tasks
+  const maxIO = cores * 2;
+  readConcurrency = Math.min(readConcurrency, Math.max(maxIO, 6));
+  writeConcurrency = Math.min(writeConcurrency, Math.max(maxIO, 6));
+
+  return {
+    memory,
+    cores,
+    isMobile,
+    readConcurrency,
+    writeConcurrency,
+    statConcurrency,
+    folderWalkConcurrency,
+    compressionLevel,
+  };
+}
+
+const DEVICE: DeviceProfile = detectDeviceProfile();
+
+// ============================================================
+// Small adaptive helper (for very small / very large batches)
+// ============================================================
+
+function adaptive(base: number, count: number, max: number): number {
+  if (count <= 20) return Math.min(base, max);
+  if (count <= 200) return Math.min(Math.ceil(base * 1.5), max);
+  return Math.min(Math.ceil(base * 2), max);
+}
 
 const STORE_EXTENSIONS = new Set([
   'zip', 'gz', 'bz2', 'xz', '7z', 'rar', 'tar', 'zst', 'br',
@@ -34,7 +125,7 @@ export interface BackupEntry {
   readmePath: string;
   zipName: string;
   size: number;
-  hasSystemFiles: boolean;
+  hasSystemFiles: 'yes' | 'no' | 'unknown';
 }
 
 export interface BackupResult {
@@ -61,19 +152,7 @@ interface ListedFolder {
 }
 
 // ============================================================
-// Adaptive concurrency
-// ============================================================
-
-function adaptiveConcurrency(count: number, base: number, max: number): number {
-  if (count <= 20) return Math.min(base, max);
-  if (count <= 200) return Math.min(base * 2, max);
-  if (count <= 1000) return Math.min(base * 3, max);
-  if (count <= 5000) return Math.min(base * 4, max);
-  return max;
-}
-
-// ============================================================
-// Parallel map — dynamic worker count
+// Concurrency helpers
 // ============================================================
 
 async function mapConcurrent<T, R>(
@@ -107,13 +186,6 @@ async function mapConcurrent<T, R>(
   if (failFast && errors.length > 0) throw errors[0];
   return results;
 }
-
-// ============================================================
-// Multi-function scanning strategy
-//   - countVisible(): instant via cached vault.getFiles()
-//   - countSystem(): walks ONLY system folders with max concurrency
-//   - statBatch(): parallel stat with adaptive concurrency
-// ============================================================
 
 async function listFolder(vault: Vault, folder: string): Promise<ListedFolder> {
   try {
@@ -158,8 +230,12 @@ export class BackupManager {
     this.settings = s;
   }
 
+  getDeviceProfile(): DeviceProfile {
+    return DEVICE;
+  }
+
   // ============================================================
-  // Stats — cached, adaptively parallel
+  // Stats
   // ============================================================
 
   getCachedStats(includeSystem: boolean): VaultStats | null {
@@ -177,9 +253,7 @@ export class BackupManager {
     const now = Date.now();
 
     const cached = this.statsCache.get(key);
-    if (cached && now - cached.ts < this.STATS_TTL) {
-      return cached.value;
-    }
+    if (cached && now - cached.ts < this.STATS_TTL) return cached.value;
 
     const inflight = this.statsInFlight.get(key);
     if (inflight) return inflight;
@@ -200,26 +274,19 @@ export class BackupManager {
   }
 
   private async computeStats(includeSystem: boolean): Promise<VaultStats> {
-    // Function 1: visible files (instant via cache)
     const visible = this.countVisible();
-
     if (!includeSystem) {
-      return {
-        files: visible.files,
-        folders: visible.folders,
-        size: visible.size,
-      };
+      return { files: visible.files, folders: visible.folders, size: visible.size };
     }
 
-    // Function 2: walk ONLY system folders
     const system = await this.walkSystemFolders();
 
-    // Function 3: stat all system files in parallel with adaptive concurrency
-    const concurrency = adaptiveConcurrency(
+    const concurrency = adaptive(
+      DEVICE.statConcurrency,
       system.files.length,
-      STAT_CONCURRENCY_MAX / 4,
-      STAT_CONCURRENCY_MAX
+      DEVICE.statConcurrency * 2
     );
+
     const sizes = await mapConcurrent(
       system.files,
       concurrency,
@@ -249,10 +316,6 @@ export class BackupManager {
     return { files, folders: this.countVisibleFolders(), size };
   }
 
-  // ============================================================
-  // System folder walk — only 3 folders, max parallel
-  // ============================================================
-
   private async walkSystemFolders(): Promise<PathSet> {
     const files: string[] = [];
     const folders: string[] = [];
@@ -261,11 +324,12 @@ export class BackupManager {
       const listing = await listFolder(this.vault, folder);
       for (const f of listing.files) files.push(f);
 
-      const concurrency = adaptiveConcurrency(
+      const concurrency = adaptive(
+        DEVICE.folderWalkConcurrency,
         listing.folders.length,
-        4,
-        FOLDER_WALK_CONCURRENCY_MAX
+        DEVICE.folderWalkConcurrency
       );
+
       await mapConcurrent(
         listing.folders,
         concurrency,
@@ -278,7 +342,6 @@ export class BackupManager {
       );
     };
 
-    // Walk the 3 system folders in parallel
     await mapConcurrent(
       SYSTEM_FOLDERS,
       3,
@@ -314,7 +377,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Full walk (for backup)
+  // Full walk for backup
   // ============================================================
 
   private async collectAllPaths(includeSystem: boolean): Promise<PathSet> {
@@ -336,10 +399,10 @@ export class BackupManager {
         files.push(f);
       }
       const subs = listing.folders.filter((sf) => !this.isInsideLocalBackup(sf));
-      const concurrency = adaptiveConcurrency(
+      const concurrency = adaptive(
+        DEVICE.folderWalkConcurrency,
         subs.length,
-        4,
-        FOLDER_WALK_CONCURRENCY_MAX
+        DEVICE.folderWalkConcurrency
       );
       await mapConcurrent(
         subs,
@@ -374,34 +437,38 @@ export class BackupManager {
 
     onProgress('creating', 8);
     const zip = new JSZip();
-
     let totalBytes = 0;
     let succeeded = 0;
     let processed = 0;
 
-    const readConcurrency = adaptiveConcurrency(
+    const readConcurrency = adaptive(
+      DEVICE.readConcurrency,
       paths.length,
-      READ_CONCURRENCY_MAX / 4,
-      READ_CONCURRENCY_MAX
+      DEVICE.readConcurrency * 2
     );
 
-    await mapConcurrent(paths, readConcurrency, async (path) => {
-      try {
-        const content = await this.vault.adapter.readBinary(path);
-        const store = this.shouldStore(path);
-        zip.file(path, content, store ? { compression: 'STORE' } : undefined);
-        totalBytes += content.byteLength;
-        succeeded++;
-      } catch (e) {
-        console.warn('[Simple SYNC] read failed:', path, e);
-      }
-      processed++;
-      if (processed % 20 === 0 || processed === paths.length) {
-        const pct = 8 + Math.floor((processed / paths.length) * 42);
-        onProgress('creating', pct);
-      }
-      return null;
-    }, false);
+    await mapConcurrent(
+      paths,
+      readConcurrency,
+      async (path) => {
+        try {
+          const content = await this.vault.adapter.readBinary(path);
+          const store = this.shouldStore(path);
+          zip.file(path, content, store ? { compression: 'STORE' } : undefined);
+          totalBytes += content.byteLength;
+          succeeded++;
+        } catch (e) {
+          console.warn('[Simple SYNC] read failed:', path, e);
+        }
+        processed++;
+        if (processed % 20 === 0 || processed === paths.length) {
+          const pct = 8 + Math.floor((processed / paths.length) * 42);
+          onProgress('creating', pct);
+        }
+        return null;
+      },
+      false
+    );
 
     if (succeeded === 0) throw new Error('No files could be read');
 
@@ -410,7 +477,7 @@ export class BackupManager {
       {
         type: 'blob',
         compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
+        compressionOptions: { level: DEVICE.compressionLevel },
       },
       (meta) => {
         onProgress('creating', 50 + Math.floor(meta.percent * 0.08));
@@ -440,12 +507,21 @@ export class BackupManager {
     onProgress('uploading', 60);
     const zipBytes = await blob.arrayBuffer();
 
+    // Upload with progressive feedback
+    const totalToUpload = 2; // ZIP + README
+    let uploaded = 0;
+
     await this.github.commitFiles(
       [
         { path: `${folder}/${zipName}`, content: zipBytes },
         { path: `${folder}/README.md`, content: readmeBytes.buffer },
       ],
-      `Backup ${datePath} — ${description || 'no description'}`
+      `Backup ${datePath} — ${description || 'no description'}`,
+      (done, total) => {
+        // Map GitHub's per-blob progress to the 60–88% range
+        const pct = 60 + Math.floor((done / Math.max(total, 1)) * 28);
+        onProgress('uploading', Math.min(pct, 88));
+      }
     );
 
     onProgress('uploading', 88);
@@ -453,14 +529,13 @@ export class BackupManager {
     const localPath = await this.saveLocalMirror(folder, zipName, blob, readme);
     onProgress('localCopy', 100);
 
-    // Invalidate stats cache — we just created a new backup
     this.invalidateStats();
 
     return { folder, localPath, fileCount: succeeded, size: totalBytes };
   }
 
   // ============================================================
-  // Restore
+  // List backups
   // ============================================================
 
   async listBackups(): Promise<BackupEntry[]> {
@@ -479,18 +554,19 @@ export class BackupManager {
     }
 
     const folderArr = Array.from(folders.entries()).filter(([, e]) => e.zip);
+    const readmeConcurrency = Math.min(10, DEVICE.readConcurrency);
 
     const results = await mapConcurrent(
       folderArr,
-      10,
+      readmeConcurrency,
       async ([folderPath, entry]) => {
         let description = '';
-        let hasSystemFiles = false;
+        let hasSystemFiles: 'yes' | 'no' | 'unknown' = 'unknown';
         try {
           if (entry.readme) {
             const text = await this.github.getFileText(entry.readme.path);
             description = this.extractDescription(text || '');
-            hasSystemFiles = /System files:\*\*\s*yes/i.test(text || '');
+            hasSystemFiles = this.detectSystemFiles(text || '');
           }
         } catch {}
         const lastSegment = folderPath.split('/').pop() || folderPath;
@@ -512,22 +588,38 @@ export class BackupManager {
     return result.sort((a, b) => b.date.localeCompare(a.date));
   }
 
+  private detectSystemFiles(readme: string): 'yes' | 'no' | 'unknown' {
+    const match = readme.match(
+      /system\s*files\s*:?\s*\*{0,2}\s*(yes|no|true|false)/i
+    );
+    if (!match) return 'unknown';
+    const v = match[1].toLowerCase();
+    if (v === 'yes' || v === 'true') return 'yes';
+    return 'no';
+  }
+
+  // ============================================================
+  // Restore
+  // ============================================================
+
   async restoreBackup(
     entry: BackupEntry,
     includeSystem: boolean,
     onProgress: ProgressCallback
   ): Promise<number> {
+    // 1. Snapshot current vault FIRST (before touching anything)
     onProgress('snapshotting', 3);
     await this.snapshotCurrentVault(onProgress);
 
+    // 2. Download
     onProgress('downloading', 25);
     const zipBuffer = await this.github.getFileContent(entry.zipPath);
     if (!zipBuffer) throw new Error('Could not download backup');
 
+    // 3. Parse ZIP
     onProgress('extracting', 45);
     const zip = await JSZip.loadAsync(zipBuffer);
 
-    // Build filtered list
     const entries: [string, any][] = [];
     for (const [path, file] of Object.entries(zip.files)) {
       const f = file as any;
@@ -536,7 +628,7 @@ export class BackupManager {
       entries.push([path, file]);
     }
 
-    // Pre-create folders
+    // 4. Pre-create all folders
     const folderSet = new Set<string>();
     for (const [path] of entries) {
       const parts = path.split('/');
@@ -557,12 +649,13 @@ export class BackupManager {
       } catch {}
     }
 
+    // 5. Write files in parallel
     let count = 0;
     let processed = 0;
-    const writeConcurrency = adaptiveConcurrency(
+    const writeConcurrency = adaptive(
+      DEVICE.writeConcurrency,
       entries.length,
-      WRITE_CONCURRENCY_MAX / 4,
-      WRITE_CONCURRENCY_MAX
+      DEVICE.writeConcurrency * 2
     );
 
     await mapConcurrent(
@@ -591,14 +684,17 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Snapshot
+  // Snapshot (pre-restore safety)
   // ============================================================
 
   private async snapshotCurrentVault(onProgress: ProgressCallback): Promise<string> {
     const { files: paths } = await this.collectAllPaths(true);
+    if (paths.length === 0) return '';
+
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const folder = `${LOCAL_BACKUP_FOLDER}/${SNAPSHOT_PREFIX}-${stamp}`;
 
+    // Pre-create folders
     const folderSet = new Set<string>();
     for (const path of paths) {
       const parts = path.split('/');
@@ -621,10 +717,10 @@ export class BackupManager {
 
     let count = 0;
     let processed = 0;
-    const concurrency = adaptiveConcurrency(
+    const concurrency = adaptive(
+      DEVICE.readConcurrency,
       paths.length,
-      READ_CONCURRENCY_MAX / 4,
-      READ_CONCURRENCY_MAX
+      DEVICE.readConcurrency * 2
     );
 
     await mapConcurrent(
@@ -637,7 +733,7 @@ export class BackupManager {
           count++;
         } catch {}
         processed++;
-        if (processed % 20 === 0 && paths.length > 0) {
+        if (processed % 20 === 0) {
           onProgress('snapshotting', 3 + Math.floor((processed / paths.length) * 22));
         }
         return null;
@@ -737,6 +833,7 @@ export class BackupManager {
       '',
       '---',
       `Created by Simple SYNC at ${new Date().toISOString()}`,
+      `Device: ${DEVICE.isMobile ? 'mobile' : 'desktop'} · RAM: ${DEVICE.memory}GB · Cores: ${DEVICE.cores}`,
     ].join('\n');
   }
 
