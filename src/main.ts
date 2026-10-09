@@ -87,9 +87,11 @@ export default class SimpleSyncPlugin extends Plugin {
     progress.open();
 
     try {
-      const result = await this.backupManager.createBackup(desc, (step, pct) => {
-        progress.update(step, pct);
-      });
+      const result = await this.backupManager.createBackup(
+        desc,
+        true,
+        (step, pct) => progress.update(step, pct)
+      );
       progress.finish();
       if (this.settings.showNotifications) {
         new Notice(
