@@ -1,7 +1,7 @@
 {
   "id": "simple-sync",
   "name": "Simple SYNC",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.4.0",
   "description": "Simple, reliable backup and restore for Obsidian using GitHub as a timestamped archive. Bilingual (EN/FA).",
   "author": "AMULEO",
