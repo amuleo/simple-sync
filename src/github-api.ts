@@ -7,14 +7,9 @@ export interface RemoteFile {
   size: number;
 }
 
-const UPLOAD_CONCURRENCY = 8;
+const UPLOAD_CONCURRENCY = 12;
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-/**
- * Run `fn` over `items` with bounded concurrency.
- * All workers complete before this resolves; if any error occurred,
- * the first error is thrown. This prevents silent partial uploads.
- */
 async function mapConcurrent<T, R>(
   items: T[],
   limit: number,
@@ -127,10 +122,6 @@ export class GitHubAPI {
     return buf ? new TextDecoder().decode(buf) : null;
   }
 
-  /**
-   * Create a commit with the given files.
-   * Blobs are uploaded in parallel. If any blob fails, the whole commit fails.
-   */
   async commitFiles(
     files: { path: string; content: ArrayBuffer }[],
     message: string
@@ -150,7 +141,6 @@ export class GitHubAPI {
       return { path: f.path, mode: '100644', type: 'blob', sha: res.json.sha };
     });
 
-    // Safety net: verify every file produced a blob
     if (entries.length !== files.length || entries.some((e) => !e)) {
       throw new Error(
         `Upload incomplete: ${entries.filter(Boolean).length} of ${files.length} blobs created`
@@ -165,7 +155,6 @@ export class GitHubAPI {
     );
 
     if (refRes.status >= 400) {
-      // Empty repo — first commit
       const treeRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/trees`, {
         method: 'POST',
         body: { tree: treeEntries },
@@ -195,7 +184,7 @@ export class GitHubAPI {
     );
     const existing = treeRes.json.tree || [];
 
-    // 4. Merge (replace same paths)
+    // 4. Merge
     const newPaths = new Set(files.map((f) => f.path));
     const merged = existing
       .filter((i: any) => i.type === 'blob' && !newPaths.has(i.path))
@@ -229,16 +218,12 @@ export class GitHubAPI {
     if (upd.status >= 400) throw new Error(`Update branch failed: ${upd.text}`);
   }
 
-  // ============================================================
-  // Fast base64 encoding (manual, ~2-3x faster than fromCharCode+btoa for large files)
-  // ============================================================
-
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
     const len = bytes.length;
     const groups = Math.floor(len / 3);
     const parts: string[] = [];
-    const CHUNK = 16384; // groups per chunk
+    const CHUNK = 16384;
 
     for (let start = 0; start < groups; start += CHUNK) {
       const end = Math.min(start + CHUNK, groups);
