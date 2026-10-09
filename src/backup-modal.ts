@@ -24,6 +24,7 @@ export class BackupModal extends Modal {
 
   private statsEl: HTMLElement | null = null;
   private statsToken = 0;
+  private activeProgress: ProgressModal | null = null;
 
   constructor(app: App, plugin: SimpleSyncPlugin) {
     super(app);
@@ -35,24 +36,15 @@ export class BackupModal extends Modal {
     const { contentEl } = this;
     this.modalEl.addClass('simple-sync-modal');
     this.plugin.i18n.applyDirection(this.modalEl);
-    contentEl.addClass('simple-sync-body-root');
-
-    // Native title
     this.titleEl.setText(this.plugin.i18n.t('modal.title'));
 
     this.render();
 
     // Prefetch both stats variants in background
-    this.prefetchStats();
-  }
-
-  private prefetchStats() {
-    // Current selection first
-    this.manager.countFilesAndSize(this.includeSystem).catch(() => {});
-    // Other variant in background
+    this.manager.refreshStatsInBackground(this.includeSystem);
     window.setTimeout(() => {
-      this.manager.countFilesAndSize(!this.includeSystem).catch(() => {});
-    }, 400);
+      this.manager.refreshStatsInBackground(!this.includeSystem);
+    }, 300);
   }
 
   private render() {
@@ -60,11 +52,12 @@ export class BackupModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    const subtitle = contentEl.createEl('p', {
+    contentEl.createEl('p', {
       text: t('modal.subtitle'),
       cls: 'simple-sync-subtitle',
     });
 
+    // Simple tabs
     const tabs = contentEl.createEl('div', { cls: 'simple-sync-tabs' });
     this.tab(tabs, 'backup', t('modal.tab.backup'));
     this.tab(tabs, 'restore', t('modal.tab.restore'));
@@ -139,6 +132,7 @@ export class BackupModal extends Modal {
     const el = this.statsEl;
     const token = ++this.statsToken;
 
+    // Show cached immediately
     const cached = this.manager.getCachedStats(this.includeSystem);
     if (cached) {
       el.setText(
@@ -152,8 +146,13 @@ export class BackupModal extends Modal {
       el.setText(t('backup.stats.calculating'));
     }
 
+    // Background refresh in parallel
+    this.manager.refreshStatsInBackground(this.includeSystem);
+
     try {
-      const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
+      const { files, folders, size } = await this.manager.countFilesAndSize(
+        this.includeSystem
+      );
       if (token !== this.statsToken || el !== this.statsEl) return;
       el.setText(
         t('backup.stats', {
@@ -184,15 +183,18 @@ export class BackupModal extends Modal {
     if (!ok) return;
 
     const progress = new ProgressModal(this.app, this.plugin);
+    this.activeProgress = progress;
     progress.open();
 
     try {
       const result = await this.manager.createBackup(
         this.description,
         this.includeSystem,
-        (step, pct) => progress.update(step, pct)
+        (step, pct) => progress.update(step, pct),
+        () => progress.isCancelled()
       );
       progress.finish();
+      this.activeProgress = null;
       this.description = '';
       if (this.plugin.settings.showNotifications) {
         new Notice(
@@ -204,8 +206,13 @@ export class BackupModal extends Modal {
       this.render();
     } catch (e: any) {
       progress.close();
-      new Notice(t('backup.failed', { error: e.message }), 8000);
-      this.plugin.updateStatusBar('error');
+      this.activeProgress = null;
+      if (e.message === 'Cancelled') {
+        new Notice(t('progress.cancelled'));
+      } else {
+        new Notice(t('backup.failed', { error: e.message }), 8000);
+        this.plugin.updateStatusBar('error');
+      }
     }
   }
 
@@ -236,7 +243,6 @@ export class BackupModal extends Modal {
       parent.createEl('div', { cls: 'simple-sync-empty', text: t('restore.empty') });
     } else {
       const list = parent.createEl('div', { cls: 'simple-sync-list' });
-      list.id = 'simple-sync-restore-list';
 
       const visible = this.backups.slice(0, this.visibleCount);
       for (const entry of visible) this.renderBackupEntry(list, entry);
@@ -257,9 +263,8 @@ export class BackupModal extends Modal {
           for (const entry of newItems) this.renderBackupEntry(list, entry);
           if (this.visibleCount >= this.backups.length) more.remove();
           else {
-            const newRemaining = this.backups.length - this.visibleCount;
-            const newNext = Math.min(PAGE_SIZE, newRemaining);
-            more.setText(t('restore.showMore', { count: newNext }));
+            const nr = this.backups.length - this.visibleCount;
+            more.setText(t('restore.showMore', { count: Math.min(PAGE_SIZE, nr) }));
           }
         };
       }
@@ -327,7 +332,8 @@ export class BackupModal extends Modal {
       const count = await this.manager.restoreBackup(
         entry,
         decision.includeSystem,
-        (step, pct) => progress.update(step, pct)
+        (step, pct) => progress.update(step, pct),
+        () => progress.isCancelled()
       );
       progress.finish();
       if (this.plugin.settings.showNotifications) {
@@ -336,8 +342,12 @@ export class BackupModal extends Modal {
       this.plugin.updateStatusBar('ok');
     } catch (e: any) {
       progress.close();
-      new Notice(t('restore.failed', { error: e.message }), 8000);
-      this.plugin.updateStatusBar('error');
+      if (e.message === 'Cancelled') {
+        new Notice(t('progress.cancelled'));
+      } else {
+        new Notice(t('restore.failed', { error: e.message }), 8000);
+        this.plugin.updateStatusBar('error');
+      }
     }
   }
 
