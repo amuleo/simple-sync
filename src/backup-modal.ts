@@ -11,11 +11,9 @@ export class BackupModal extends Modal {
   manager: BackupManager;
   activeTab: Tab = 'backup';
 
-  // Backup tab state
   description = '';
   includeSystem = true;
 
-  // Restore tab state
   backups: BackupEntry[] = [];
   loadingBackups = false;
   backupsError: string | null = null;
@@ -38,16 +36,16 @@ export class BackupModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    contentEl.createEl('h2', { text: t('modal.title') });
-    contentEl.createEl('p', {
-      text: t('modal.subtitle'),
-      cls: 'setting-item-description',
-    });
+    // Header
+    const header = contentEl.createEl('div', { cls: 'simple-sync-header' });
+    header.createEl('h2', { text: t('modal.title') });
+    header.createEl('p', { text: t('modal.subtitle'), cls: 'simple-sync-subtitle' });
 
-    const tabs = contentEl.createEl('div', { cls: 'nav-buttons-container' });
-    this.tab(tabs, 'backup', `📦 ${t('modal.tab.backup')}`);
-    this.tab(tabs, 'restore', `♻️ ${t('modal.tab.restore')}`);
-    this.tab(tabs, 'about', `ℹ️ ${t('modal.tab.about')}`);
+    // Tabs
+    const tabs = contentEl.createEl('div', { cls: 'simple-sync-tabs' });
+    this.tab(tabs, 'backup', t('modal.tab.backup'));
+    this.tab(tabs, 'restore', t('modal.tab.restore'));
+    this.tab(tabs, 'about', t('modal.tab.about'));
 
     const body = contentEl.createEl('div', { cls: 'simple-sync-body' });
 
@@ -59,7 +57,7 @@ export class BackupModal extends Modal {
   private tab(parent: HTMLElement, id: Tab, label: string) {
     const btn = parent.createEl('button', {
       text: label,
-      cls: `nav-action-button ${this.activeTab === id ? 'is-active' : ''}`,
+      cls: `simple-sync-tab ${this.activeTab === id ? 'is-active' : ''}`,
     });
     btn.onclick = () => {
       this.activeTab = id;
@@ -78,13 +76,11 @@ export class BackupModal extends Modal {
   private renderBackupTab(parent: HTMLElement) {
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
 
-    parent.createEl('h3', { text: t('backup.title') });
-    parent.createEl('p', {
-      text: t('backup.desc'),
-      cls: 'setting-item-description',
-    });
+    const section = parent.createEl('div', { cls: 'simple-sync-section' });
+    section.createEl('h3', { text: t('backup.title') });
+    section.createEl('p', { text: t('backup.desc'), cls: 'simple-sync-section-desc' });
 
-    const setting = new Setting(parent)
+    new Setting(parent)
       .setName(t('backup.descriptionLabel'))
       .addTextArea((ta) => {
         ta.inputEl.rows = 3;
@@ -100,17 +96,14 @@ export class BackupModal extends Modal {
         tg.setValue(this.includeSystem).onChange((v) => { this.includeSystem = v; })
       );
 
-    // Stats
     const stats = parent.createEl('div', { cls: 'simple-sync-stats-line' });
     stats.id = 'simple-sync-backup-stats';
-    stats.setText(`📊 ${t('backup.stats', { count: '…', size: '…' })}`);
     this.updateStatsLine();
 
-    // Footer
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
     const btn = footer.createEl('button', {
-      text: `📦 ${t('backup.button')}`,
-      cls: 'mod-cta',
+      text: t('backup.button'),
+      cls: 'mod-cta simple-sync-btn-lg',
     });
     btn.onclick = () => this.doBackup();
   }
@@ -127,7 +120,7 @@ export class BackupModal extends Modal {
         count++;
         size += file.stat.size;
       }
-      el.setText(`📊 ${t('backup.stats', { count, size: BackupManager.formatBytes(size) })}`);
+      el.setText(t('backup.stats', { count, size: BackupManager.formatBytes(size) }));
     } catch {
       el.setText('');
     }
@@ -136,7 +129,6 @@ export class BackupModal extends Modal {
   private async doBackup() {
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
 
-    // Guard
     if (!this.plugin.settings.token || !this.plugin.settings.repo) {
       new Notice(t('error.noRepo'), 5000);
       return;
@@ -154,9 +146,11 @@ export class BackupModal extends Modal {
     progress.open();
 
     try {
-      const result = await this.manager.createBackup(this.description, (step, pct) => {
-        progress.update(step, pct);
-      });
+      const result = await this.manager.createBackup(
+        this.description,
+        this.includeSystem,
+        (step, pct) => progress.update(step, pct)
+      );
       progress.finish();
       this.description = '';
       if (this.plugin.settings.showNotifications) {
@@ -181,34 +175,28 @@ export class BackupModal extends Modal {
   private renderRestoreTab(parent: HTMLElement) {
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
 
-    parent.createEl('h3', { text: t('restore.title') });
-    parent.createEl('p', {
-      text: t('restore.desc'),
-      cls: 'setting-item-description',
-    });
+    const section = parent.createEl('div', { cls: 'simple-sync-section' });
+    section.createEl('h3', { text: t('restore.title') });
+    section.createEl('p', { text: t('restore.desc'), cls: 'simple-sync-section-desc' });
 
     if (this.loadingBackups) {
-      parent.createEl('p', { text: `⏳ ${t('restore.loading')}` });
+      parent.createEl('p', { text: t('restore.loading'), cls: 'simple-sync-loading' });
       return;
     }
 
     if (this.backupsError) {
-      parent.createEl('div', { cls: 'mod-warning', text: `❌ ${this.backupsError}` });
+      parent.createEl('div', { cls: 'mod-warning simple-sync-error', text: t('restore.failed', { error: this.backupsError }) });
     }
 
     if (this.backups.length === 0) {
-      const empty = parent.createEl('div', { cls: 'simple-sync-empty' });
-      empty.setText(t('restore.empty'));
+      parent.createEl('div', { cls: 'simple-sync-empty', text: t('restore.empty') });
     } else {
       const list = parent.createEl('div', { cls: 'simple-sync-list' });
-      for (const entry of this.backups) {
-        this.renderBackupEntry(list, entry);
-      }
+      for (const entry of this.backups) this.renderBackupEntry(list, entry);
     }
 
-    // Refresh button
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
-    const refresh = footer.createEl('button', { text: `🔄 ${t('action.refresh')}` });
+    const refresh = footer.createEl('button', { text: t('action.refresh'), cls: 'simple-sync-btn-lg' });
     refresh.onclick = () => this.loadBackups();
   }
 
@@ -218,7 +206,7 @@ export class BackupModal extends Modal {
     const item = parent.createEl('div', { cls: 'simple-sync-list-item' });
 
     const info = item.createEl('div', { cls: 'simple-sync-list-info' });
-    info.createEl('div', { text: `📅 ${entry.date}`, cls: 'simple-sync-list-title' });
+    info.createEl('div', { text: entry.date, cls: 'simple-sync-list-title' });
     info.createEl('div', {
       text: entry.description || t('restore.noDescription'),
       cls: 'simple-sync-list-desc',
@@ -229,19 +217,14 @@ export class BackupModal extends Modal {
     });
 
     const actions = item.createEl('div', { cls: 'simple-sync-list-actions' });
-
     const restoreBtn = actions.createEl('button', {
-      text: `♻️ ${t('restore.button')}`,
+      text: t('restore.button'),
       cls: 'mod-cta',
     });
     restoreBtn.onclick = () => this.doRestore(entry);
-
-    const deleteBtn = actions.createEl('button', { text: '🗑️' });
-    deleteBtn.onclick = () => this.doDelete(entry);
   }
 
   private async loadBackups() {
-    const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
     this.loadingBackups = true;
     this.backupsError = null;
     this.render();
@@ -285,27 +268,6 @@ export class BackupModal extends Modal {
     }
   }
 
-  private async doDelete(entry: BackupEntry) {
-    const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
-    const ok = await askConfirmation(this.app, {
-      title: t('restore.deleteBackup'),
-      message: t('restore.confirmDelete'),
-      confirmText: t('action.confirm'),
-      cancelText: t('action.cancel'),
-      isDangerous: true,
-    });
-    if (!ok) return;
-
-    try {
-      await this.manager.deleteBackup(entry);
-      new Notice(t('restore.deleted'));
-      this.backups = this.backups.filter((b) => b.folder !== entry.folder);
-      this.render();
-    } catch (e: any) {
-      new Notice(`❌ ${e.message}`, 6000);
-    }
-  }
-
   // ============================================================
   // About tab
   // ============================================================
@@ -313,15 +275,16 @@ export class BackupModal extends Modal {
   private renderAboutTab(parent: HTMLElement) {
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
 
-    parent.createEl('h3', { text: t('about.title') });
-    parent.createEl('p', { text: t('about.text') });
+    const section = parent.createEl('div', { cls: 'simple-sync-section' });
+    section.createEl('h3', { text: t('about.title') });
+    section.createEl('p', { text: t('about.text') });
 
-    parent.createEl('h4', { text: t('about.safety') });
-    const pre = parent.createEl('pre', { cls: 'simple-sync-pre' });
+    section.createEl('h4', { text: t('about.safety') });
+    const pre = section.createEl('pre', { cls: 'simple-sync-pre' });
     pre.setText(t('about.safety.text'));
 
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
-    const guide = footer.createEl('button', { text: `📖 ${t('action.guide')}` });
+    const guide = footer.createEl('button', { text: t('action.guide'), cls: 'simple-sync-btn-lg' });
     guide.onclick = () => {
       this.close();
       this.plugin.openGuide();
