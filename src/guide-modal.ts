@@ -17,8 +17,25 @@ export class GuideModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('simple-sync-modal-marker');
-    this.plugin.i18n.applyDirection(contentEl);
+    this.modalEl.addClass('simple-sync-modal');
+    this.plugin.i18n.applyDirection(this.modalEl);
+
+    this.titleEl.setText(this.plugin.i18n.t('guide.title'));
+
+    // Back button
+    const backBtn = this.titleEl.createEl('button', {
+      cls: 'simple-sync-back-btn',
+      text: '‹',
+      attr: { 'aria-label': this.plugin.i18n.t('action.back') },
+    });
+    backBtn.onclick = () => this.close();
+    this.titleEl.appendChild(
+      this.titleEl.createEl('span', {
+        text: this.plugin.i18n.t('guide.title'),
+        cls: 'simple-sync-title-text',
+      })
+    );
+
     this.render();
   }
 
@@ -62,34 +79,36 @@ export class GuideModal extends Modal {
             '۳. روی «ساخت پشتیبان» بزنید.',
             '',
             'افزونه به‌صورت خودکار:',
-            '   • کل Vault شما را اسکن می‌کند (شامل پوشه‌های مخفی مثل .obsidian)',
+            '   • کل مخزن شما را اسکن می‌کند (شامل پوشه‌های مخفی مثل .obsidian)',
             '   • یک فایل ZIP می‌سازد',
             '   • آن را در مسیر backups/YYYY.MM.DD/ در گیت‌هاب آپلود می‌کند',
-            '   • یک کپی محلی در پوشه‌ی .backup/ داخل Vault ذخیره می‌کند',
+            '   • یک کپی محلی در پوشه‌ی .backup/ داخل مخزن ذخیره می‌کند',
             '',
             'نام پوشه با تاریخ شمسی است. اگر در همان روز چند بکاپ بگیرید،',
-            'به نام پوشه یک پسوند ساعت اضافه می‌شود.',
+            'به نام پوشه یک پسوند تصادفی اضافه می‌شود.',
           ],
         },
         restore: {
           title: 'بازیابی',
           lines: [
             '۱. تب «بازیابی» را باز کنید.',
-            '۲. لیست پشتیبان‌های موجود نمایش داده می‌شود.',
-            '۳. یکی را انتخاب و روی «بازیابی» بزنید.',
+            '۲. لیست پشتیبان‌های موجود نمایش داده می‌شود (اول ۷ مورد).',
+            '۳. برای دیدن موارد بیشتر، روی «نمایش بیشتر» بزنید.',
+            '۴. یکی را انتخاب و روی «بازیابی» بزنید.',
             '',
-            'قبل از بازیابی، افزونه یک اسنپ‌شات از Vault فعلی در',
+            'قبل از بازیابی، افزونه یک اسنپ‌شات از مخزن فعلی در',
             'پوشه‌ی .backup/snapshot-* ذخیره می‌کند تا در صورت نیاز',
             'بتوانید به وضعیت قبلی برگردید.',
             '',
-            'همچنین می‌توانید هر پشتیبان را از گیت‌هاب حذف کنید.',
+            'در مودال تایید، می‌توانید انتخاب کنید که فایل‌های سیستمی',
+            '(مثل .obsidian) هم بازیابی شوند یا نه.',
           ],
         },
         safety: {
           title: 'امنیت',
           lines: [
             '✅ توکن شما هرگز از دستگاه خارج نمی‌شود.',
-            '✅ قبل از هر بازیابی، یک اسنپ‌شات از Vault فعلی ذخیره می‌شود.',
+            '✅ قبل از هر بازیابی، یک اسنپ‌شات از مخزن فعلی ذخیره می‌شود.',
             '✅ پوشه‌ی .backup همیشه از پشتیبان‌گیری‌های بعدی مستثنی است.',
             '✅ سایر مخازن شما هرگز دست‌کاری نمی‌شوند.',
             '✅ پشتیبان‌ها روی گیت‌هاب (و در صورت خصوصی بودن) محرمانه باقی می‌مانند.',
@@ -99,7 +118,7 @@ export class GuideModal extends Modal {
           title: 'سوالات متداول',
           lines: [
             '❓ آیا پوشه‌های مخفی مثل .obsidian هم پشتیبان‌گیری می‌شوند؟',
-            '   بله، به‌طور پیش‌فرض همه‌ی فایل‌ها شامل می‌شوند.',
+            '   بله، اگر گزینه‌ی «شامل پوشه‌های مخفی» روشن باشد.',
             '',
             '❓ پوشه‌ی .backup چیست؟',
             '   یک پوشه‌ی محلی که نسخه‌های محلی و اسنپ‌شات‌ها را نگه می‌دارد.',
@@ -118,7 +137,7 @@ export class GuideModal extends Modal {
         lines: [
           '1. Open settings and paste your GitHub token.',
           '2. Click "Test Connection". On success your repos load.',
-          '3. Pick a repository (a private one is recommended for backups).',
+          '3. Pick a repository (a private one is recommended).',
           '4. Click "Open Simple SYNC".',
           '5. Write a short description and click "Create Backup".',
           '',
@@ -148,26 +167,28 @@ export class GuideModal extends Modal {
           '3. Click "Create Backup".',
           '',
           'The plugin then:',
-          '   • Scans your entire vault (including hidden folders like .obsidian)',
+          '   • Scans your entire vault (including hidden folders)',
           '   • Builds a ZIP archive',
           '   • Uploads it to backups/YYYY.MM.DD/ on GitHub',
           '   • Saves a local mirror to .backup/ inside your vault',
           '',
           'Folder names use the Persian (Jalali) calendar.',
-          'Multiple backups on the same day receive an additional time suffix.',
+          'Multiple backups on the same day receive a random suffix.',
         ],
       },
       restore: {
         title: 'Restore',
         lines: [
           '1. Open the "Restore" tab.',
-          '2. Your available backups are listed.',
-          '3. Pick one and click "Restore".',
+          '2. Your available backups are listed (first 7).',
+          '3. Click "Show more" for additional items.',
+          '4. Pick one and click "Restore".',
           '',
           'Before restoring, the plugin saves a snapshot of your current vault',
           'to .backup/snapshot-* so you can recover if needed.',
           '',
-          'You can also delete any backup from GitHub.',
+          'In the confirmation dialog you can choose whether to also',
+          'restore system files (like .obsidian).',
         ],
       },
       safety: {
@@ -184,14 +205,14 @@ export class GuideModal extends Modal {
         title: 'FAQ',
         lines: [
           '❓ Are hidden folders like .obsidian included?',
-          '   Yes — everything is included by default.',
+          '   Yes, if the "Include hidden" option is enabled.',
           '',
           '❓ What is the .backup folder?',
           '   A local folder that stores local mirrors and pre-restore snapshots.',
           '   It is always excluded from new backups.',
           '',
           '❓ What if I use multiple devices?',
-          '   Each device sees all backups in the same GitHub repo and can restore any of them.',
+          '   Each device sees all backups in the same GitHub repo.',
         ],
       },
     };
@@ -202,9 +223,7 @@ export class GuideModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    contentEl.createEl('h2', { text: `📖 ${t('guide.title')}` });
-
-    const tabs = contentEl.createEl('div', { cls: 'nav-buttons-container' });
+    const tabs = contentEl.createEl('div', { cls: 'simple-sync-tabs' });
     const content = this.getContent();
 
     const tabDefs: Array<[GuideTab, string]> = [
@@ -219,7 +238,7 @@ export class GuideModal extends Modal {
     for (const [id, label] of tabDefs) {
       const btn = tabs.createEl('button', {
         text: label,
-        cls: `nav-action-button ${this.activeTab === id ? 'is-active' : ''}`,
+        cls: `simple-sync-tab ${this.activeTab === id ? 'is-active' : ''}`,
       });
       btn.onclick = () => { this.activeTab = id; this.render(); };
     }
