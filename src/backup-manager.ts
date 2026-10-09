@@ -2,10 +2,12 @@ import { Vault, TFile, normalizePath } from 'obsidian';
 import JSZip from 'jszip';
 import { GitHubAPI } from './github-api';
 import { SimpleSyncSettings } from './settings';
-import { toJalali, formatJalaliPath, jalaliTimestampSuffix, formatJalaliReadable } from './jalali';
+import { toJalali, formatJalaliPath, formatJalaliReadable } from './jalali';
 
 const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
+
+const SYSTEM_PREFIXES = ['.obsidian/', '.trash/', '.git/'];
 
 export type ProgressStep = 'scanning' | 'creating' | 'uploading' | 'snapshotting' | 'downloading' | 'extracting' | 'localCopy';
 export type ProgressCallback = (step: ProgressStep, percent: number) => void;
@@ -41,15 +43,16 @@ export class BackupManager {
   // Backup
   // ============================================================
 
-  async createBackup(description: string, onProgress: ProgressCallback): Promise<BackupResult> {
-    const exclude = this.getExcludePatterns();
-
-    // 1. Scan
+  async createBackup(
+    description: string,
+    includeSystem: boolean,
+    onProgress: ProgressCallback
+  ): Promise<BackupResult> {
     onProgress('scanning', 3);
-    const files = this.collectFiles(exclude);
+    const files = this.collectFiles(includeSystem);
+
     if (files.length === 0) throw new Error('No files to back up');
 
-    // 2. Build ZIP
     onProgress('creating', 10);
     const zip = new JSZip();
     let totalBytes = 0;
@@ -76,24 +79,19 @@ export class BackupManager {
       compressionOptions: { level: 6 },
     });
 
-    // 3. Folder name (Jalali date with collision-safe suffix)
+    // Folder name (Jalali date with random 3-digit suffix on collision)
     const now = new Date();
-    const jalali = toJalali(now);
-    const datePath = formatJalaliPath(jalali);
+    const datePath = formatJalaliPath(toJalali(now));
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
     let folder = baseFolder;
-    let attempts = 0;
-    while (await this.folderExists(folder)) {
-      attempts++;
-      folder = `${baseFolder}-${jalaliTimestampSuffix(now)}${attempts > 1 ? '-' + attempts : ''}`;
-      if (attempts > 50) break;
+
+    if (await this.folderExists(folder)) {
+      folder = `${baseFolder}-${this.randomSuffix()}`;
     }
 
-    // 4. README
     const readme = this.buildReadme(description, now, files.length, totalBytes);
     const readmeBytes = new TextEncoder().encode(readme);
 
-    // 5. Upload
     onProgress('uploading', 58);
     const zipBytes = await blob.arrayBuffer();
     await this.github.commitFiles(
@@ -106,7 +104,6 @@ export class BackupManager {
 
     onProgress('uploading', 88);
 
-    // 6. Local mirror
     onProgress('localCopy', 92);
     const localPath = await this.saveLocalMirror(folder, blob, readme);
 
@@ -159,16 +156,13 @@ export class BackupManager {
   }
 
   async restoreBackup(entry: BackupEntry, onProgress: ProgressCallback): Promise<number> {
-    // 1. Snapshot current vault
     onProgress('snapshotting', 3);
     await this.snapshotCurrentVault(onProgress);
 
-    // 2. Download
     onProgress('downloading', 28);
     const zipBuffer = await this.github.getFileContent(entry.zipPath);
     if (!zipBuffer) throw new Error('Could not download backup');
 
-    // 3. Extract
     onProgress('extracting', 48);
     const zip = await JSZip.loadAsync(zipBuffer);
     const entries = Object.entries(zip.files).filter(([, e]: any) => !e.dir);
@@ -192,16 +186,12 @@ export class BackupManager {
     return count;
   }
 
-  async deleteBackup(entry: BackupEntry): Promise<void> {
-    await this.github.deleteFolder(entry.folder, `Delete backup ${entry.date}`);
-  }
-
   // ============================================================
   // Snapshot
   // ============================================================
 
   private async snapshotCurrentVault(onProgress: ProgressCallback): Promise<string> {
-    const files = this.collectFiles(this.getExcludePatterns());
+    const files = this.collectFiles(true);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const folder = `${LOCAL_BACKUP_FOLDER}/${SNAPSHOT_PREFIX}-${stamp}`;
 
@@ -238,31 +228,28 @@ export class BackupManager {
   // Helpers
   // ============================================================
 
-  private getExcludePatterns(): string[] {
-    const patterns = [LOCAL_BACKUP_FOLDER];
-    if (this.settings.excludePatterns) {
-      for (const line of this.settings.excludePatterns.split('\n')) {
-        const p = line.trim();
-        if (p && !p.startsWith('#')) patterns.push(p.replace(/\/$/, ''));
-      }
-    }
-    return patterns;
+  private randomSuffix(): string {
+    return String(Math.floor(Math.random() * 900) + 100);
   }
 
-  private collectFiles(exclude: string[]): TFile[] {
+  private isSystemPath(path: string): boolean {
+    if (SYSTEM_PREFIXES.some((p) => path.startsWith(p))) return true;
+    const segments = path.split('/');
+    return segments.some((s) => s.startsWith('.') && s !== '.' && s !== '..');
+  }
+
+  private collectFiles(includeSystem: boolean): TFile[] {
     const out: TFile[] = [];
-    for (const file of this.vault.getFiles()) {
-      if (this.isExcluded(file.path, exclude)) continue;
+    const allFiles = this.vault.getFiles();
+    for (const file of allFiles) {
+      // Always exclude the backup folder itself
+      if (file.path === LOCAL_BACKUP_FOLDER || file.path.startsWith(LOCAL_BACKUP_FOLDER + '/')) {
+        continue;
+      }
+      if (!includeSystem && this.isSystemPath(file.path)) continue;
       out.push(file);
     }
     return out;
-  }
-
-  private isExcluded(path: string, patterns: string[]): boolean {
-    for (const p of patterns) {
-      if (path === p || path.startsWith(p + '/')) return true;
-    }
-    return false;
   }
 
   private async folderExists(folder: string): Promise<boolean> {
