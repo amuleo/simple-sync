@@ -1,13 +1,14 @@
 /* ============================================================
    Simple SYNC — Styles
+   Minimal, native-first, mobile-friendly, RTL-aware.
    ============================================================ */
 
-/* RTL */
+/* ---------- RTL helper ---------- */
 .simple-sync-rtl {
   text-align: right;
 }
 
-/* Status bar */
+/* ---------- Status bar ---------- */
 .simple-sync-status-bar {
   cursor: pointer;
   padding: 0 8px;
@@ -212,16 +213,26 @@
   flex-shrink: 0;
 }
 
-/* Smaller, aligned restore button */
-.simple-sync-list-actions button {
-  padding: 5px 12px;
+/* Restore button — compact, aligned, 25% smaller than the previous size */
+.simple-sync-restore-btn {
+  padding: 6px 14px;
   font-size: 12px;
   min-height: 30px;
+  height: 30px;
   line-height: 1;
   border-radius: var(--radius-s);
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease;
+}
+
+.simple-sync-restore-btn:hover {
+  opacity: 0.9;
 }
 
 /* ============================================================
@@ -371,7 +382,7 @@
 }
 
 /* ============================================================
-   Pre block (about tab)
+   Pre block (About tab)
    ============================================================ */
 
 .simple-sync-pre {
@@ -388,20 +399,25 @@
 }
 
 /* ============================================================
-   RTL overrides — dynamic flip
+   RTL dynamic overrides (Persian)
    ============================================================ */
 
-/* Flip toggle switches so they animate right-to-left in Persian */
+/* Flip checkboxes / toggles so they animate right-to-left */
 .simple-sync-rtl .checkbox-container {
   transform: scaleX(-1);
 }
 
-/* Ensure setting rows reverse in RTL */
+/* Keep the whole settings row consistent */
 .simple-sync-rtl .setting-item {
   direction: rtl;
 }
 
-/* Align info blocks properly */
+.simple-sync-rtl .setting-item-name,
+.simple-sync-rtl .setting-item-description {
+  text-align: right;
+}
+
+/* Flip list item text alignment */
 .simple-sync-rtl .simple-sync-list-title,
 .simple-sync-rtl .simple-sync-list-desc,
 .simple-sync-rtl .simple-sync-list-meta {
@@ -409,7 +425,7 @@
 }
 
 /* ============================================================
-   Mobile
+   Mobile (≤ 600px)
    ============================================================ */
 
 @media (max-width: 600px) {
@@ -434,14 +450,18 @@
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
+    padding: 12px;
   }
 
   .simple-sync-list-actions {
     justify-content: flex-end;
   }
 
-  .simple-sync-list-actions button {
-    flex: 1;
+  .simple-sync-restore-btn {
+    padding: 6px 14px;
+    min-height: 30px;
+    height: 30px;
+    font-size: 12px;
   }
 
   .simple-sync-guide-body {
@@ -450,7 +470,7 @@
 }
 
 /* ============================================================
-   Desktop
+   Desktop (≥ 700px)
    ============================================================ */
 
 @media (min-width: 700px) {
