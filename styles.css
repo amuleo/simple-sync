@@ -232,6 +232,25 @@
   opacity: 0.9;
 }
 
+/* Show-more button */
+.simple-sync-show-more {
+  width: 100%;
+  padding: 10px 14px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease;
+}
+
+.simple-sync-show-more:hover {
+  background: var(--background-modifier-hover);
+}
+
 /* ============================================================
    Modal footer & buttons
    ============================================================ */
@@ -305,11 +324,18 @@
 }
 
 /* ============================================================
-   Progress modal
+   Progress modal — FIXED padding on mobile
    ============================================================ */
 
 .simple-sync-progress-modal {
-  max-width: 420px;
+  max-width: min(420px, calc(100vw - 32px));
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Give inner padding so content never touches screen edges */
+.simple-sync-progress-modal .modal-content {
+  padding: 20px 22px 22px;
 }
 
 .simple-sync-progress-title {
@@ -399,12 +425,10 @@
    RTL dynamic overrides (Persian)
    ============================================================ */
 
-/* Flip checkboxes / toggles so they animate right-to-left */
 .simple-sync-rtl .checkbox-container {
   transform: scaleX(-1);
 }
 
-/* Keep the whole settings row consistent */
 .simple-sync-rtl .setting-item {
   direction: rtl;
 }
@@ -414,14 +438,12 @@
   text-align: right;
 }
 
-/* Flip list item text alignment */
 .simple-sync-rtl .simple-sync-list-title,
 .simple-sync-rtl .simple-sync-list-desc,
 .simple-sync-rtl .simple-sync-list-meta {
   text-align: right;
 }
 
-/* Keep restore button label centered regardless of direction */
 .simple-sync-rtl .simple-sync-restore-btn {
   text-align: center;
 }
@@ -459,6 +481,16 @@
 
   .simple-sync-guide-body {
     max-height: 55vh;
+  }
+
+  /* Progress modal: extra padding on mobile so nothing touches edges */
+  .simple-sync-progress-modal {
+    max-width: calc(100vw - 24px);
+    margin: 0 auto;
+  }
+
+  .simple-sync-progress-modal .modal-content {
+    padding: 18px 18px 20px;
   }
 }
 
