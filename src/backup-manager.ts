@@ -8,10 +8,27 @@ const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
 const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
-const READ_CONCURRENCY = 12;
-const WRITE_CONCURRENCY = 10;
+const READ_CONCURRENCY = 16;
+const WRITE_CONCURRENCY = 12;
+const STAT_CONCURRENCY = 32;
+const WALK_CHUNK = 8;
 
-export type ProgressStep = 'scanning' | 'creating' | 'uploading' | 'snapshotting' | 'downloading' | 'extracting' | 'localCopy';
+/**
+ * File extensions that are already compressed. Store them without re-deflating
+ * to save time and produce a smaller ZIP (double compression wastes CPU
+ * and often increases size).
+ */
+const STORE_EXTENSIONS = new Set([
+  'zip', 'gz', 'bz2', 'xz', '7z', 'rar', 'tar', 'zst', 'br',
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif',
+  'mp3', 'mp4', 'mov', 'avi', 'mkv', 'webm', 'wav', 'flac', 'ogg', 'm4a', 'm4v',
+  'pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'epub',
+  'woff', 'woff2', 'ttf', 'otf', 'eot',
+]);
+
+export type ProgressStep =
+  | 'scanning' | 'creating' | 'uploading'
+  | 'snapshotting' | 'downloading' | 'extracting' | 'localCopy';
 export type ProgressCallback = (step: ProgressStep, percent: number) => void;
 
 export interface BackupEntry {
@@ -31,26 +48,66 @@ export interface BackupResult {
   size: number;
 }
 
+export interface VaultStats {
+  files: number;
+  folders: number;
+  size: number;
+}
+
 async function mapConcurrent<T, R>(
   items: T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
+  const errors: any[] = [];
   let cursor = 0;
-  const workers = Array(Math.min(limit, items.length))
-    .fill(null)
-    .map(async () => {
-      while (true) {
-        const idx = cursor++;
-        if (idx >= items.length) break;
-        try {
-          results[idx] = await fn(items[idx], idx);
-        } catch {
-          // leave undefined
+  const workerCount = Math.min(limit, items.length);
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(
+      (async () => {
+        while (true) {
+          const idx = cursor++;
+          if (idx >= items.length) break;
+          try {
+            results[idx] = await fn(items[idx], idx);
+          } catch (e) {
+            errors.push(e);
+          }
         }
-      }
-    });
+      })()
+    );
+  }
+  await Promise.all(workers);
+  if (errors.length > 0) throw errors[0];
+  return results;
+}
+
+async function mapConcurrentSafe<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(
+      (async () => {
+        while (true) {
+          const idx = cursor++;
+          if (idx >= items.length) break;
+          try {
+            results[idx] = await fn(items[idx], idx);
+          } catch {
+            // swallow
+          }
+        }
+      })()
+    );
+  }
   await Promise.all(workers);
   return results;
 }
@@ -67,20 +124,28 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Public: stats for the modal
+  // Stats (fast, parallel, includes folder count)
   // ============================================================
 
-  async countFilesAndSize(includeSystem: boolean): Promise<{ count: number; size: number }> {
-    const paths = await this.collectAllPaths(includeSystem);
+  async countFilesAndSize(includeSystem: boolean): Promise<VaultStats> {
+    const { files, folders } = await this.collectAllPaths(includeSystem);
+
+    // Sum sizes in parallel. adapter.stat is the only reliable way to get sizes
+    // for hidden/system files that Obsidian's vault cache doesn't track.
     let size = 0;
-    await mapConcurrent(paths, READ_CONCURRENCY, async (p) => {
+    let statErrors = 0;
+
+    await mapConcurrentSafe(files, STAT_CONCURRENCY, async (p) => {
       try {
         const st = await this.vault.adapter.stat(p);
-        if (st && st.size) size += st.size;
-      } catch {}
+        if (st && typeof st.size === 'number') size += st.size;
+      } catch {
+        statErrors++;
+      }
       return null;
     });
-    return { count: paths.length, size };
+
+    return { files: files.length, folders: folders.length, size };
   }
 
   // ============================================================
@@ -93,7 +158,7 @@ export class BackupManager {
     onProgress: ProgressCallback
   ): Promise<BackupResult> {
     onProgress('scanning', 3);
-    const paths = await this.collectAllPaths(includeSystem);
+    const { files: paths } = await this.collectAllPaths(includeSystem);
     if (paths.length === 0) throw new Error('No files to back up');
 
     onProgress('creating', 8);
@@ -103,11 +168,11 @@ export class BackupManager {
     let succeeded = 0;
     let processed = 0;
 
-    // Parallel read + add to JSZip
-    await mapConcurrent(paths, READ_CONCURRENCY, async (path) => {
+    await mapConcurrentSafe(paths, READ_CONCURRENCY, async (path) => {
       try {
         const content = await this.vault.adapter.readBinary(path);
-        zip.file(path, content);
+        const store = this.shouldStore(path);
+        zip.file(path, content, store ? { compression: 'STORE' } : undefined);
         totalBytes += content.byteLength;
         succeeded++;
       } catch (e) {
@@ -128,10 +193,9 @@ export class BackupManager {
       {
         type: 'blob',
         compression: 'DEFLATE',
-        compressionOptions: { level: 5 },
+        compressionOptions: { level: 6 },
       },
       (meta) => {
-        // meta.percent from 0-100 during zip generation
         onProgress('creating', 50 + Math.floor(meta.percent * 0.08));
       }
     );
@@ -190,9 +254,9 @@ export class BackupManager {
       folders.set(folderName, entry);
     }
 
-    // Parallelize README fetch
     const folderArr = Array.from(folders.entries()).filter(([, e]) => e.zip);
-    const results = await mapConcurrent(folderArr, 6, async ([folderPath, entry]) => {
+
+    const results = await mapConcurrentSafe(folderArr, 6, async ([folderPath, entry]) => {
       let description = '';
       try {
         if (entry.readme) {
@@ -229,7 +293,7 @@ export class BackupManager {
     const zip = await JSZip.loadAsync(zipBuffer);
     const entries = Object.entries(zip.files).filter(([, e]: any) => !e.dir) as [string, any][];
 
-    // Pre-create all parent folders once (sequentially, deduped)
+    // Pre-create all parent folders (deduped, shallow first)
     const folderSet = new Set<string>();
     for (const [path] of entries) {
       const parts = path.split('/');
@@ -250,10 +314,9 @@ export class BackupManager {
       } catch {}
     }
 
-    // Parallel extraction + write
     let count = 0;
     let processed = 0;
-    await mapConcurrent(entries, WRITE_CONCURRENCY, async ([path, file]) => {
+    await mapConcurrentSafe(entries, WRITE_CONCURRENCY, async ([path, file]) => {
       try {
         const content = await file.async('arraybuffer');
         await this.vault.adapter.writeBinary(normalizePath(path), content);
@@ -278,11 +341,10 @@ export class BackupManager {
   // ============================================================
 
   private async snapshotCurrentVault(onProgress: ProgressCallback): Promise<string> {
-    const paths = await this.collectAllPaths(true);
+    const { files: paths } = await this.collectAllPaths(true);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const folder = `${LOCAL_BACKUP_FOLDER}/${SNAPSHOT_PREFIX}-${stamp}`;
 
-    // Pre-create folders
     const folderSet = new Set<string>();
     for (const path of paths) {
       const parts = path.split('/');
@@ -293,9 +355,10 @@ export class BackupManager {
         folderSet.add(`${folder}/${current}`);
       }
     }
-    for (const f of Array.from(folderSet).sort(
+    const folderList = Array.from(folderSet).sort(
       (a, b) => a.split('/').length - b.split('/').length
-    )) {
+    );
+    for (const f of folderList) {
       try {
         const exists = await this.vault.adapter.exists(f);
         if (!exists) await this.vault.adapter.mkdir(f);
@@ -304,7 +367,7 @@ export class BackupManager {
 
     let count = 0;
     let processed = 0;
-    await mapConcurrent(paths, READ_CONCURRENCY, async (path) => {
+    await mapConcurrentSafe(paths, READ_CONCURRENCY, async (path) => {
       try {
         const content = await this.vault.adapter.readBinary(path);
         await this.vault.adapter.writeBinary(`${folder}/${path}`, content);
@@ -346,11 +409,14 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Path walking
+  // Path walking (parallel with chunked recursion)
   // ============================================================
 
-  private async collectAllPaths(includeSystem: boolean): Promise<string[]> {
-    const out: string[] = [];
+  private async collectAllPaths(
+    includeSystem: boolean
+  ): Promise<{ files: string[]; folders: string[] }> {
+    const files: string[] = [];
+    const folders: string[] = [];
 
     const walk = async (folder: string): Promise<void> => {
       let listing;
@@ -363,17 +429,26 @@ export class BackupManager {
       for (const filePath of listing.files) {
         if (this.isInsideLocalBackup(filePath)) continue;
         if (!includeSystem && this.isSystemPath(filePath)) continue;
-        out.push(filePath);
+        files.push(filePath);
       }
 
-      for (const subfolder of listing.folders) {
-        if (this.isInsideLocalBackup(subfolder)) continue;
-        await walk(subfolder);
+      const subfolders = listing.folders.filter(
+        (sf) => !this.isInsideLocalBackup(sf) && (includeSystem || !this.isSystemPath(sf))
+      );
+
+      for (let i = 0; i < subfolders.length; i += WALK_CHUNK) {
+        const chunk = subfolders.slice(i, i + WALK_CHUNK);
+        await Promise.all(
+          chunk.map(async (sf) => {
+            folders.push(sf);
+            await walk(sf);
+          })
+        );
       }
     };
 
     await walk('');
-    return out;
+    return { files, folders };
   }
 
   private isInsideLocalBackup(path: string): boolean {
@@ -386,6 +461,13 @@ export class BackupManager {
     }
     const segments = path.split('/');
     return segments.some((s) => s.startsWith('.') && s !== '.' && s !== '..');
+  }
+
+  private shouldStore(path: string): boolean {
+    const idx = path.lastIndexOf('.');
+    if (idx < 0) return false;
+    const ext = path.slice(idx + 1).toLowerCase();
+    return STORE_EXTENSIONS.has(ext);
   }
 
   private makeZipFileName(folderName: string): string {
@@ -408,7 +490,12 @@ export class BackupManager {
     }
   }
 
-  private buildReadme(description: string, date: Date, fileCount: number, totalBytes: number): string {
+  private buildReadme(
+    description: string,
+    date: Date,
+    fileCount: number,
+    totalBytes: number
+  ): string {
     return [
       '# Simple SYNC Backup',
       '',
