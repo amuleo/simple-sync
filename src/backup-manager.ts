@@ -8,6 +8,11 @@ const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
 const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
+// GitHub Contents API limit is 100 MB per file.
+// Use 88 MB to leave headroom (base64 overhead, JSON wrapping, etc.)
+const MAX_SINGLE_FILE_BYTES = 88 * 1024 * 1024;
+const PART_SIZE_BYTES = 80 * 1024 * 1024; // 80 MB per part
+
 // ============================================================
 // Device profile
 // ============================================================
@@ -21,6 +26,7 @@ interface DeviceProfile {
   statConcurrency: number;
   folderWalkConcurrency: number;
   compressionLevel: number;
+  uploadConcurrency: number;
 }
 
 function detectDeviceProfile(): DeviceProfile {
@@ -39,31 +45,28 @@ function detectDeviceProfile(): DeviceProfile {
   let statConcurrency = 64;
   let folderWalkConcurrency = 24;
   let compressionLevel = 6;
+  let uploadConcurrency = 4;
 
   if (memory <= 2) {
-    readConcurrency = 6;
-    writeConcurrency = 6;
-    statConcurrency = 24;
-    folderWalkConcurrency = 8;
-    compressionLevel = 4;
+    readConcurrency = 6; writeConcurrency = 6; statConcurrency = 24;
+    folderWalkConcurrency = 8; compressionLevel = 4; uploadConcurrency = 2;
   } else if (memory <= 4) {
     readConcurrency = isMobile ? 12 : 20;
     writeConcurrency = isMobile ? 10 : 16;
     statConcurrency = isMobile ? 48 : 80;
     folderWalkConcurrency = isMobile ? 20 : 32;
     compressionLevel = isMobile ? 5 : 6;
+    uploadConcurrency = isMobile ? 2 : 4;
   } else if (memory <= 8) {
     readConcurrency = isMobile ? 20 : 32;
     writeConcurrency = isMobile ? 16 : 24;
     statConcurrency = isMobile ? 96 : 128;
     folderWalkConcurrency = isMobile ? 32 : 48;
     compressionLevel = 6;
+    uploadConcurrency = isMobile ? 3 : 5;
   } else {
-    readConcurrency = 32;
-    writeConcurrency = 24;
-    statConcurrency = 128;
-    folderWalkConcurrency = 48;
-    compressionLevel = 6;
+    readConcurrency = 32; writeConcurrency = 24; statConcurrency = 128;
+    folderWalkConcurrency = 48; compressionLevel = 6; uploadConcurrency = 6;
   }
 
   const maxIO = cores * 2;
@@ -73,7 +76,7 @@ function detectDeviceProfile(): DeviceProfile {
   return {
     memory, cores, isMobile,
     readConcurrency, writeConcurrency, statConcurrency,
-    folderWalkConcurrency, compressionLevel,
+    folderWalkConcurrency, compressionLevel, uploadConcurrency,
   };
 }
 
@@ -88,8 +91,9 @@ const STORE_EXTENSIONS = new Set([
 ]);
 
 export type ProgressStep =
-  | 'scanning' | 'creating' | 'uploading'
-  | 'snapshotting' | 'downloading' | 'extracting' | 'localCopy';
+  | 'scanning' | 'creating' | 'splitting' | 'uploading' | 'uploadingPart'
+  | 'snapshotting' | 'downloading' | 'downloadingPart' | 'reassembling'
+  | 'extracting' | 'localCopy';
 export type ProgressCallback = (step: ProgressStep, percent: number) => void;
 export type IsCancelledFn = () => boolean;
 
@@ -97,11 +101,12 @@ export interface BackupEntry {
   folder: string;
   date: string;
   description: string;
-  zipPath: string;
+  zipPath: string;         // primary path (single-file or first part)
   readmePath: string;
   zipName: string;
-  size: number;
+  size: number;            // total bytes across parts
   hasSystemFiles: 'yes' | 'no' | 'unknown';
+  partPaths: string[];     // all parts, in order. Single-file = [zipPath]
 }
 
 export interface BackupResult {
@@ -109,6 +114,7 @@ export interface BackupResult {
   localPath: string;
   fileCount: number;
   size: number;
+  parts: number;
 }
 
 export interface VaultStats {
@@ -128,7 +134,7 @@ interface ListedFolder {
 }
 
 // ============================================================
-// Concurrency helpers
+// Helpers
 // ============================================================
 
 async function mapConcurrent<T, R>(
@@ -190,36 +196,53 @@ async function statSize(vault: Vault, path: string): Promise<number> {
   }
 }
 
-// ============================================================
-// fflate promise wrappers
-// ============================================================
-
 function fflateZipAsync(
   files: Record<string, Uint8Array>,
   opts: { level: number; mem: number }
 ): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
-    fflateZip(files, opts, (err, data) => {
-      if (err) reject(err);
-      else resolve(data);
-    });
+    fflateZip(files, opts, (err, data) => err ? reject(err) : resolve(data));
   });
 }
 
 function fflateUnzipAsync(data: Uint8Array): Promise<Record<string, Uint8Array>> {
   return new Promise((resolve, reject) => {
-    fflateUnzip(data, (err, out) => {
-      if (err) reject(err);
-      else resolve(out);
-    });
+    fflateUnzip(data, (err, out) => err ? reject(err) : resolve(out));
   });
+}
+
+/** Split a Uint8Array into fixed-size chunks (returns copies). */
+function splitBytes(data: Uint8Array, chunkSize: number): Uint8Array[] {
+  if (data.byteLength <= chunkSize) return [data];
+  const parts: Uint8Array[] = [];
+  for (let i = 0; i < data.byteLength; i += chunkSize) {
+    parts.push(data.slice(i, Math.min(i + chunkSize, data.byteLength)));
+  }
+  return parts;
+}
+
+/** Concatenate an array of Uint8Arrays into one. */
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.byteLength;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.byteLength;
+  }
+  return out;
+}
+
+function formatPartSuffix(i: number): string {
+  return `part-${String(i).padStart(3, '0')}`;
 }
 
 // ============================================================
 // BackupManager
 // ============================================================
 
-const STATS_TTL = 5 * 60 * 1000;  // 5 minutes
+const STATS_TTL = 5 * 60 * 1000;
 
 export class BackupManager {
   private statsCache = new Map<string, { value: VaultStats; ts: number }>();
@@ -240,7 +263,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Stats: cached, background-refreshable
+  // Stats
   // ============================================================
 
   getCachedStats(includeSystem: boolean): VaultStats | null {
@@ -282,7 +305,6 @@ export class BackupManager {
     return promise;
   }
 
-  /** Fire-and-forget background refresh. */
   refreshStatsInBackground(includeSystem: boolean) {
     if (!this.isCacheStale(includeSystem)) return;
     this.countFilesAndSize(includeSystem).catch(() => {});
@@ -329,7 +351,6 @@ export class BackupManager {
     const walk = async (folder: string): Promise<void> => {
       const listing = await listFolder(this.vault, folder);
       for (const f of listing.files) files.push(f);
-
       await mapConcurrent(
         listing.folders,
         DEVICE.folderWalkConcurrency,
@@ -375,10 +396,6 @@ export class BackupManager {
     return count;
   }
 
-  // ============================================================
-  // Full walk
-  // ============================================================
-
   private async collectAllPaths(
     includeSystem: boolean,
     isCancelled?: IsCancelledFn
@@ -420,7 +437,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Backup
+  // Backup (with large-file support)
   // ============================================================
 
   async createBackup(
@@ -436,7 +453,7 @@ export class BackupManager {
 
     const hasSystemFiles = includeSystem && paths.some((p) => this.isSystemPath(p));
 
-    // 2. Read files in parallel → build fflate file map
+    // 2. Read files in parallel
     onProgress('creating', 10);
     const fileMap: Record<string, Uint8Array> = {};
     let totalBytes = 0;
@@ -468,7 +485,7 @@ export class BackupManager {
     if (succeeded === 0) throw new Error('No files could be read');
     if (isCancelled?.()) throw new Error('Cancelled');
 
-    // 3. fflate ZIP — much faster than JSZip
+    // 3. fflate ZIP
     onProgress('creating', 52);
     let zipBytes: Uint8Array;
     try {
@@ -482,7 +499,10 @@ export class BackupManager {
     if (isCancelled?.()) throw new Error('Cancelled');
     onProgress('creating', 60);
 
-    // 4. Determine folder name and file name
+    // Free memory: the ZIP is now self-contained
+    for (const k of Object.keys(fileMap)) delete fileMap[k];
+
+    // 4. Folder name & file name
     const now = new Date();
     const datePath = formatJalaliPath(toJalali(now));
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
@@ -494,30 +514,97 @@ export class BackupManager {
     const zipName = this.makeZipFileName(folderName);
 
     // 5. Build README
-    const readme = this.buildReadme(description, now, succeeded, totalBytes, hasSystemFiles);
+    const zipSize = zipBytes.byteLength;
+
+    // 6. Decide: single-file or multi-part
+    if (zipSize <= MAX_SINGLE_FILE_BYTES) {
+      // ---- Single-file path ----
+      const readme = this.buildReadme(
+        description, now, succeeded, totalBytes, hasSystemFiles, 1, zipSize
+      );
+      const readmeBytes = new TextEncoder().encode(readme);
+
+      onProgress('uploading', 62);
+      await this.github.uploadFile(
+        `${folder}/${zipName}`,
+        zipBytes,
+        `Backup ${datePath} — ${description || 'no description'}`
+      );
+      if (isCancelled?.()) throw new Error('Cancelled');
+      onProgress('uploading', 85);
+
+      await this.github.uploadFile(
+        `${folder}/README.md`,
+        readmeBytes,
+        `Add README for ${datePath}`
+      );
+      onProgress('uploading', 90);
+
+      onProgress('localCopy', 92);
+      const localPath = await this.saveLocalMirror(
+        folder, zipName, [zipBytes], readme
+      );
+      onProgress('localCopy', 100);
+
+      this.invalidateStats();
+
+      return {
+        folder,
+        localPath,
+        fileCount: succeeded,
+        size: zipSize,
+        parts: 1,
+      };
+    }
+
+    // ---- Multi-part path ----
+    const parts = splitBytes(zipBytes, PART_SIZE_BYTES);
+    const partCount = parts.length;
+
+    const readme = this.buildReadme(
+      description, now, succeeded, totalBytes, hasSystemFiles, partCount, zipSize
+    );
     const readmeBytes = new TextEncoder().encode(readme);
 
-    // 6. Upload ZIP (single file via Contents API — FAST)
-    onProgress('uploading', 62);
-    await this.github.uploadFile(
-      `${folder}/${zipName}`,
-      zipBytes,
-      `Backup ${datePath} — ${description || 'no description'}`
-    );
-    if (isCancelled?.()) throw new Error('Cancelled');
-    onProgress('uploading', 82);
+    onProgress('splitting', 62);
 
-    // 7. Upload README
+    // Upload parts in parallel (bounded)
+    let uploadedParts = 0;
+    onProgress('uploadingPart', 64);
+
+    await mapConcurrent(
+      parts,
+      DEVICE.uploadConcurrency,
+      async (partData, i) => {
+        if (isCancelled?.()) throw new Error('Cancelled');
+        const partName = `${zipName}.${formatPartSuffix(i + 1)}`;
+        await this.github.uploadFile(
+          `${folder}/${partName}`,
+          partData,
+          `Backup ${datePath} — part ${i + 1}/${partCount}`
+        );
+        uploadedParts++;
+        // Progress: 64% → 88% mapped across parts
+        const pct = 64 + Math.floor((uploadedParts / partCount) * 24);
+        onProgress('uploadingPart', Math.min(pct, 88));
+        return null;
+      },
+      { failFast: true, isCancelled }
+    );
+
+    if (isCancelled?.()) throw new Error('Cancelled');
+
+    // Upload README last
     await this.github.uploadFile(
       `${folder}/README.md`,
       readmeBytes,
       `Add README for ${datePath}`
     );
-    onProgress('uploading', 90);
+    onProgress('uploadingPart', 90);
 
-    // 8. Local mirror
+    // Local mirror (write all parts, to make restore-from-local possible)
     onProgress('localCopy', 92);
-    const localPath = await this.saveLocalMirror(folder, zipName, zipBytes, readme);
+    const localPath = await this.saveLocalMirror(folder, zipName, parts, readme);
     onProgress('localCopy', 100);
 
     this.invalidateStats();
@@ -526,61 +613,98 @@ export class BackupManager {
       folder,
       localPath,
       fileCount: succeeded,
-      size: zipBytes.byteLength,
+      size: zipSize,
+      parts: partCount,
     };
   }
 
   // ============================================================
-  // List backups
+  // List backups (detects single + multi-part)
   // ============================================================
 
   async listBackups(): Promise<BackupEntry[]> {
     const files = await this.github.listFolderFiles(this.settings.backupFolder);
 
-    const folders = new Map<string, { zip?: any; readme?: any }>();
+    // Group by folder
+    type FolderState = {
+      readme?: any;
+      singleZip?: any;
+      parts: { index: number; file: any }[];
+    };
+    const folders = new Map<string, FolderState>();
+
     for (const f of files) {
       const parts = f.path.split('/');
       if (parts.length < 2) continue;
       const folderName = parts.slice(0, -1).join('/');
       const fileName = parts[parts.length - 1];
-      const entry = folders.get(folderName) || {};
-      if (fileName.endsWith('.zip')) entry.zip = f;
-      if (fileName === 'README.md') entry.readme = f;
-      folders.set(folderName, entry);
+
+      let st = folders.get(folderName);
+      if (!st) {
+        st = { parts: [] };
+        folders.set(folderName, st);
+      }
+
+      if (fileName === 'README.md') {
+        st.readme = f;
+      } else if (/\.zip\.part-\d+$/.test(fileName)) {
+        const m = fileName.match(/\.part-(\d+)$/);
+        const idx = m ? parseInt(m[1], 10) : 0;
+        st.parts.push({ index: idx, file: f });
+      } else if (fileName.endsWith('.zip')) {
+        st.singleZip = f;
+      }
     }
 
-    const folderArr = Array.from(folders.entries()).filter(([, e]) => e.zip);
+    const entries: BackupEntry[] = [];
 
-    const results = await mapConcurrent(
-      folderArr,
-      Math.min(10, DEVICE.readConcurrency),
-      async ([folderPath, entry]) => {
-        let description = '';
-        let hasSystemFiles: 'yes' | 'no' | 'unknown' = 'unknown';
-        try {
-          if (entry.readme) {
-            const text = await this.github.getFileText(entry.readme.path);
-            description = this.extractDescription(text || '');
-            hasSystemFiles = this.detectSystemFiles(text || '');
-          }
-        } catch {}
-        const lastSegment = folderPath.split('/').pop() || folderPath;
-        return {
-          folder: folderPath,
-          date: lastSegment,
-          description,
-          zipPath: entry.zip.path,
-          readmePath: entry.readme?.path || '',
-          zipName: entry.zip.path.split('/').pop() || 'backup.zip',
-          size: entry.zip.size,
-          hasSystemFiles,
-        } as BackupEntry;
-      },
-      { failFast: false }
-    );
+    for (const [folderPath, st] of folders) {
+      const hasParts = st.parts.length > 0;
+      if (!st.singleZip && !hasParts) continue;
 
-    return (results.filter(Boolean) as BackupEntry[])
-      .sort((a, b) => b.date.localeCompare(a.date));
+      let description = '';
+      let hasSystemFiles: 'yes' | 'no' | 'unknown' = 'unknown';
+      try {
+        if (st.readme) {
+          const text = await this.github.getFileText(st.readme.path);
+          description = this.extractDescription(text || '');
+          hasSystemFiles = this.detectSystemFiles(text || '');
+        }
+      } catch {}
+
+      const lastSegment = folderPath.split('/').pop() || folderPath;
+      let partPaths: string[];
+      let size = 0;
+      let zipName: string;
+      let zipPath: string;
+
+      if (hasParts) {
+        st.parts.sort((a, b) => a.index - b.index);
+        partPaths = st.parts.map((p) => p.file.path);
+        for (const p of st.parts) size += p.file.size || 0;
+        zipName = st.parts[0].file.path.split('/').pop()?.replace(/\.part-\d+$/, '') || 'backup.zip';
+        zipPath = st.parts[0].file.path;
+      } else {
+        partPaths = [st.singleZip.path];
+        size = st.singleZip.size || 0;
+        zipName = st.singleZip.path.split('/').pop() || 'backup.zip';
+        zipPath = st.singleZip.path;
+      }
+
+      entries.push({
+        folder: folderPath,
+        date: lastSegment,
+        description,
+        zipPath,
+        readmePath: st.readme?.path || '',
+        zipName,
+        size,
+        hasSystemFiles,
+        partPaths,
+      });
+    }
+
+    return entries.sort((a, b) => b.date.localeCompare(a.date));
   }
 
   private detectSystemFiles(readme: string): 'yes' | 'no' | 'unknown' {
@@ -591,7 +715,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Restore
+  // Restore (with multi-part support)
   // ============================================================
 
   async restoreBackup(
@@ -603,20 +727,59 @@ export class BackupManager {
     onProgress('snapshotting', 3);
     await this.snapshotCurrentVault(onProgress, isCancelled);
 
-    onProgress('downloading', 25);
-    const zipBuffer = await this.github.getFileContent(entry.zipPath);
-    if (!zipBuffer) throw new Error('Could not download backup');
+    // 1. Download all parts
+    const isMulti = entry.partPaths.length > 1;
+    const partBuffers: Uint8Array[] = new Array(entry.partPaths.length);
+
+    if (isMulti) {
+      onProgress('downloadingPart', 25);
+    } else {
+      onProgress('downloading', 25);
+    }
+
+    let downloaded = 0;
+    await mapConcurrent(
+      entry.partPaths,
+      Math.min(4, DEVICE.uploadConcurrency),
+      async (path, i) => {
+        if (isCancelled?.()) throw new Error('Cancelled');
+        const buf = await this.github.getFileContent(path);
+        if (!buf) throw new Error(`Failed to download part ${i + 1}`);
+        partBuffers[i] = new Uint8Array(buf);
+        downloaded++;
+        const pct = 25 + Math.floor((downloaded / entry.partPaths.length) * 20);
+        onProgress(isMulti ? 'downloadingPart' : 'downloading', Math.min(pct, 45));
+        return null;
+      },
+      { failFast: true, isCancelled }
+    );
+
     if (isCancelled?.()) throw new Error('Cancelled');
 
-    onProgress('extracting', 45);
+    // 2. Reassemble
+    let zipBytes: Uint8Array;
+    if (isMulti) {
+      onProgress('reassembling', 46);
+      zipBytes = concatBytes(partBuffers);
+      // Free memory
+      partBuffers.length = 0;
+    } else {
+      zipBytes = partBuffers[0];
+    }
+
+    // 3. Unzip
+    onProgress('extracting', 50);
     let files: Record<string, Uint8Array>;
     try {
-      files = await fflateUnzipAsync(new Uint8Array(zipBuffer));
+      files = await fflateUnzipAsync(zipBytes);
     } catch (e: any) {
       throw new Error(`Unzip failed: ${e.message}`);
     }
 
-    // Filter
+    // Free zip memory
+    zipBytes = new Uint8Array(0);
+
+    // Filter by includeSystem
     const entries: [string, Uint8Array][] = [];
     for (const [path, content] of Object.entries(files)) {
       if (!includeSystem && this.isSystemPath(path)) continue;
@@ -643,6 +806,7 @@ export class BackupManager {
       } catch {}
     }
 
+    // Write files
     let count = 0;
     let processed = 0;
     await mapConcurrent(
@@ -661,7 +825,7 @@ export class BackupManager {
         }
         processed++;
         if (processed % 20 === 0 || processed === entries.length) {
-          const pct = 45 + Math.floor((processed / entries.length) * 55);
+          const pct = 50 + Math.floor((processed / entries.length) * 50);
           onProgress('extracting', pct);
         }
         return null;
@@ -674,7 +838,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Snapshot (safety)
+  // Snapshot
   // ============================================================
 
   private async snapshotCurrentVault(
@@ -726,10 +890,14 @@ export class BackupManager {
     return folder;
   }
 
+  // ============================================================
+  // Local mirror
+  // ============================================================
+
   private async saveLocalMirror(
     folder: string,
     zipName: string,
-    zipBytes: Uint8Array,
+    parts: Uint8Array[],
     readme: string
   ): Promise<string> {
     const dateFolder = folder.split('/').pop() || 'backup';
@@ -742,16 +910,30 @@ export class BackupManager {
     } catch {}
 
     const readmeBytes = new TextEncoder().encode(readme);
-    const zipBuf = zipBytes.buffer.slice(
-      zipBytes.byteOffset,
-      zipBytes.byteOffset + zipBytes.byteLength
-    ) as ArrayBuffer;
+    const writes: Promise<any>[] = [];
 
-    await Promise.all([
-      this.vault.adapter.writeBinary(`${localDir}/${zipName}`, zipBuf),
-      this.vault.adapter.writeBinary(`${localDir}/README.md`, readmeBytes.buffer),
-    ]);
+    if (parts.length === 1) {
+      const buf = parts[0].buffer.slice(
+        parts[0].byteOffset,
+        parts[0].byteOffset + parts[0].byteLength
+      ) as ArrayBuffer;
+      writes.push(this.vault.adapter.writeBinary(`${localDir}/${zipName}`, buf));
+    } else {
+      for (let i = 0; i < parts.length; i++) {
+        const partName = `${zipName}.${formatPartSuffix(i + 1)}`;
+        const buf = parts[i].buffer.slice(
+          parts[i].byteOffset,
+          parts[i].byteOffset + parts[i].byteLength
+        ) as ArrayBuffer;
+        writes.push(this.vault.adapter.writeBinary(`${localDir}/${partName}`, buf));
+      }
+    }
 
+    writes.push(
+      this.vault.adapter.writeBinary(`${localDir}/README.md`, readmeBytes.buffer)
+    );
+
+    await Promise.all(writes);
     return localDir;
   }
 
@@ -796,15 +978,25 @@ export class BackupManager {
     date: Date,
     fileCount: number,
     totalBytes: number,
-    hasSystemFiles: boolean
+    hasSystemFiles: boolean,
+    parts: number,
+    zipBytes: number
   ): string {
-    return [
+    const lines = [
       '# Simple SYNC Backup',
       '',
       `**Date:** ${formatJalaliReadable(date)}`,
       `**Files:** ${fileCount}`,
-      `**Size:** ${this.formatBytes(totalBytes)}`,
+      `**Source size:** ${this.formatBytes(totalBytes)}`,
+      `**Archive size:** ${this.formatBytes(zipBytes)}`,
       `**System files:** ${hasSystemFiles ? 'yes' : 'no'}`,
+    ];
+
+    if (parts > 1) {
+      lines.push(`**Parts:** ${parts}`);
+    }
+
+    lines.push(
       '',
       '## Description',
       '',
@@ -813,7 +1005,9 @@ export class BackupManager {
       '---',
       `Created by Simple SYNC at ${new Date().toISOString()}`,
       `Device: ${DEVICE.isMobile ? 'mobile' : 'desktop'} · RAM: ${DEVICE.memory}GB · Cores: ${DEVICE.cores}`,
-    ].join('\n');
+    );
+
+    return lines.join('\n');
   }
 
   private extractDescription(readme: string): string {
