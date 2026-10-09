@@ -7,17 +7,76 @@ export interface RemoteFile {
   size: number;
 }
 
-const UPLOAD_CONCURRENCY = 12;
+export type UploadProgressCallback = (done: number, total: number) => void;
+
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+// ============================================================
+// Device capability detection (safe, no crash)
+// ============================================================
+
+interface DeviceCapabilities {
+  memory: number;         // in GB, defaults to 4 if unknown
+  cores: number;          // logical CPU cores
+  isMobile: boolean;
+  uploadConcurrency: number;
+  maxBlobRetries: number;
+}
+
+function detectCapabilities(): DeviceCapabilities {
+  let memory = 4;
+  let cores = 4;
+  let isMobile = false;
+
+  try {
+    // navigator.deviceMemory is Chrome/Android only
+    const nav: any = (typeof navigator !== 'undefined') ? navigator : {};
+    if (typeof nav.deviceMemory === 'number') {
+      memory = nav.deviceMemory;
+    }
+    if (typeof nav.hardwareConcurrency === 'number') {
+      cores = nav.hardwareConcurrency;
+    }
+    if (typeof document !== 'undefined') {
+      isMobile = document.body.hasClass('is-mobile');
+    }
+  } catch {
+    // use defaults
+  }
+
+  // Concurrency: 4 on low-end, up to 16 on desktop
+  let uploadConcurrency: number;
+  if (memory <= 2) uploadConcurrency = 4;
+  else if (memory <= 4) uploadConcurrency = isMobile ? 6 : 8;
+  else if (memory <= 8) uploadConcurrency = isMobile ? 10 : 14;
+  else uploadConcurrency = 16;
+
+  // Never exceed 2× cores
+  uploadConcurrency = Math.min(uploadConcurrency, cores * 2);
+  uploadConcurrency = Math.max(uploadConcurrency, 2);
+
+  const maxBlobRetries = memory <= 2 ? 1 : 3;
+
+  return { memory, cores, isMobile, uploadConcurrency, maxBlobRetries };
+}
+
+const CAPS = detectCapabilities();
+const UPLOAD_CONCURRENCY = CAPS.uploadConcurrency;
+
+// ============================================================
+// Concurrency helper with progress callback
+// ============================================================
 
 async function mapConcurrent<T, R>(
   items: T[],
   limit: number,
-  fn: (item: T, index: number) => Promise<R>
+  fn: (item: T, index: number) => Promise<R>,
+  onProgress?: (done: number, total: number) => void
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   const errors: any[] = [];
   let cursor = 0;
+  let completed = 0;
   const workerCount = Math.min(limit, items.length);
   const workers: Promise<void>[] = [];
 
@@ -31,6 +90,9 @@ async function mapConcurrent<T, R>(
             results[idx] = await fn(items[idx], idx);
           } catch (e) {
             errors.push(e);
+          } finally {
+            completed++;
+            if (onProgress) onProgress(completed, items.length);
           }
         }
       })()
@@ -42,6 +104,14 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => window.setTimeout(r, ms));
+}
+
+// ============================================================
+// GitHub API
+// ============================================================
+
 export class GitHubAPI {
   private baseUrl = 'https://api.github.com';
 
@@ -49,6 +119,10 @@ export class GitHubAPI {
 
   updateSettings(s: SimpleSyncSettings) {
     this.settings = s;
+  }
+
+  getCapabilities() {
+    return CAPS;
   }
 
   private headers(): Record<string, string> {
@@ -74,6 +148,41 @@ export class GitHubAPI {
     }
   }
 
+  /**
+   * Request with retries for transient errors (5xx, 429, timeouts).
+   */
+  private async requestWithRetry(
+    url: string,
+    options: any = {},
+    maxRetries = CAPS.maxBlobRetries
+  ): Promise<any> {
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await this.request(url, options);
+        // Retry on server errors or rate limits
+        if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+          lastErr = new Error(`HTTP ${res.status}`);
+          if (attempt < maxRetries) {
+            await sleep(Math.pow(2, attempt) * 500);
+            continue;
+          }
+        }
+        return res;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < maxRetries) {
+          await sleep(Math.pow(2, attempt) * 500);
+        }
+      }
+    }
+    throw lastErr || new Error('Request failed');
+  }
+
+  // ============================================================
+  // Auth / Repos
+  // ============================================================
+
   async getCurrentUser(): Promise<{ login: string; name: string }> {
     const res = await this.request(`${this.baseUrl}/user`);
     if (res.status === 401) throw new Error('Invalid or expired token');
@@ -86,6 +195,10 @@ export class GitHubAPI {
     if (res.status >= 400) throw new Error(`Repos error: ${res.status}`);
     return res.json;
   }
+
+  // ============================================================
+  // Refs / Trees
+  // ============================================================
 
   async getBranchSha(branch: string): Promise<string | null> {
     const res = await this.request(`${this.baseUrl}${this.repoPath()}/git/ref/heads/${branch}`);
@@ -107,6 +220,10 @@ export class GitHubAPI {
       .map((i: any) => ({ path: i.path, sha: i.sha, size: i.size || 0 }));
   }
 
+  // ============================================================
+  // File content
+  // ============================================================
+
   async getFileContent(path: string): Promise<ArrayBuffer | null> {
     const res = await this.request(
       `${this.baseUrl}${this.repoPath()}/contents/${encodeURI(path)}?ref=${this.settings.branch}`
@@ -122,24 +239,37 @@ export class GitHubAPI {
     return buf ? new TextDecoder().decode(buf) : null;
   }
 
+  // ============================================================
+  // Commit files
+  // ============================================================
+
   async commitFiles(
     files: { path: string; content: ArrayBuffer }[],
-    message: string
+    message: string,
+    onProgress?: UploadProgressCallback
   ): Promise<void> {
     if (files.length === 0) throw new Error('No files to commit');
 
-    // 1. Parallel blob creation
-    const entries = await mapConcurrent(files, UPLOAD_CONCURRENCY, async (f) => {
-      const base64 = this.arrayBufferToBase64(f.content);
-      const res = await this.request(`${this.baseUrl}${this.repoPath()}/git/blobs`, {
-        method: 'POST',
-        body: { content: base64, encoding: 'base64' },
-      });
-      if (res.status >= 400) {
-        throw new Error(`Create blob failed for ${f.path}: ${res.status} ${res.text}`);
-      }
-      return { path: f.path, mode: '100644', type: 'blob', sha: res.json.sha };
-    });
+    // 1. Parallel blob creation with retry + progress
+    const entries = await mapConcurrent(
+      files,
+      UPLOAD_CONCURRENCY,
+      async (f) => {
+        const base64 = this.arrayBufferToBase64(f.content);
+        const res = await this.requestWithRetry(
+          `${this.baseUrl}${this.repoPath()}/git/blobs`,
+          {
+            method: 'POST',
+            body: { content: base64, encoding: 'base64' },
+          }
+        );
+        if (res.status >= 400) {
+          throw new Error(`Create blob failed for ${f.path}: ${res.status}`);
+        }
+        return { path: f.path, mode: '100644', type: 'blob', sha: res.json.sha };
+      },
+      onProgress
+    );
 
     if (entries.length !== files.length || entries.some((e) => !e)) {
       throw new Error(
@@ -147,29 +277,28 @@ export class GitHubAPI {
       );
     }
 
-    const treeEntries: any[] = entries;
-
     // 2. Get parent commit
     const refRes = await this.request(
       `${this.baseUrl}${this.repoPath()}/git/ref/heads/${this.settings.branch}`
     );
 
     if (refRes.status >= 400) {
+      // Empty repo — first commit
       const treeRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/trees`, {
         method: 'POST',
-        body: { tree: treeEntries },
+        body: { tree: entries },
       });
-      if (treeRes.status >= 400) throw new Error(`Create tree failed: ${treeRes.text}`);
+      if (treeRes.status >= 400) throw new Error(`Create tree failed`);
       const commitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits`, {
         method: 'POST',
         body: { message, tree: treeRes.json.sha, parents: [] },
       });
-      if (commitRes.status >= 400) throw new Error(`Create commit failed: ${commitRes.text}`);
+      if (commitRes.status >= 400) throw new Error(`Create commit failed`);
       const finalRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/refs`, {
         method: 'POST',
         body: { ref: `refs/heads/${this.settings.branch}`, sha: commitRes.json.sha },
       });
-      if (finalRes.status >= 400) throw new Error(`Set ref failed: ${finalRes.text}`);
+      if (finalRes.status >= 400) throw new Error(`Set ref failed`);
       return;
     }
 
@@ -194,29 +323,33 @@ export class GitHubAPI {
         type: 'blob',
         sha: i.sha,
       }));
-    merged.push(...treeEntries);
+    merged.push(...entries);
 
     // 5. New tree
     const newTreeRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/trees`, {
       method: 'POST',
       body: { tree: merged },
     });
-    if (newTreeRes.status >= 400) throw new Error(`Create merged tree failed: ${newTreeRes.text}`);
+    if (newTreeRes.status >= 400) throw new Error(`Create merged tree failed`);
 
     // 6. New commit
     const commitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits`, {
       method: 'POST',
       body: { message, tree: newTreeRes.json.sha, parents: [parentSha] },
     });
-    if (commitRes.status >= 400) throw new Error(`Create commit failed: ${commitRes.text}`);
+    if (commitRes.status >= 400) throw new Error(`Create commit failed`);
 
     // 7. Update ref
     const upd = await this.request(
       `${this.baseUrl}${this.repoPath()}/git/refs/heads/${this.settings.branch}`,
       { method: 'PATCH', body: { sha: commitRes.json.sha } }
     );
-    if (upd.status >= 400) throw new Error(`Update branch failed: ${upd.text}`);
+    if (upd.status >= 400) throw new Error(`Update branch failed`);
   }
+
+  // ============================================================
+  // Fast base64 encoding (manual, chunked)
+  // ============================================================
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
