@@ -3,6 +3,7 @@ import SimpleSyncPlugin from './main';
 import { BackupManager, BackupEntry } from './backup-manager';
 import { ProgressModal } from './progress-modal';
 import { askConfirmation } from './confirm-modal';
+import { RestoreConfirmModal } from './restore-confirm-modal';
 
 type Tab = 'backup' | 'restore' | 'about';
 
@@ -14,7 +15,7 @@ export class BackupModal extends Modal {
   activeTab: Tab = 'backup';
 
   description = '';
-  includeSystem = true;
+  includeSystem = false;
 
   backups: BackupEntry[] = [];
   visibleCount = PAGE_SIZE;
@@ -23,7 +24,6 @@ export class BackupModal extends Modal {
 
   private statsEl: HTMLElement | null = null;
   private statsToken = 0;
-  private statsCache: { visible: any; system: any } = { visible: null, system: null };
 
   constructor(app: App, plugin: SimpleSyncPlugin) {
     super(app);
@@ -121,10 +121,9 @@ export class BackupModal extends Modal {
     const el = this.statsEl;
     const token = ++this.statsToken;
 
-    // Use cache if available and fresh (5s TTL)
-    const cacheKey = this.includeSystem ? 'system' : 'visible';
-    const cached = this.statsCache[cacheKey];
-    if (cached && Date.now() - cached.ts < 5000) {
+    // Show cached value instantly if available
+    const cached = this.manager.getCachedStats(this.includeSystem);
+    if (cached) {
       el.setText(
         t('backup.stats', {
           count: cached.files,
@@ -132,16 +131,15 @@ export class BackupModal extends Modal {
           size: BackupManager.formatBytes(cached.size),
         })
       );
-      return;
+    } else {
+      el.setText(t('backup.stats.calculating'));
     }
 
-    el.setText(t('backup.stats.calculating'));
-
     try {
-      const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
+      const { files, folders, size } = await this.manager.countFilesAndSize(
+        this.includeSystem
+      );
       if (token !== this.statsToken || el !== this.statsEl) return;
-
-      this.statsCache[cacheKey] = { files, folders, size, ts: Date.now() };
       el.setText(
         t('backup.stats', {
           count: files,
@@ -150,7 +148,7 @@ export class BackupModal extends Modal {
         })
       );
     } catch {
-      if (token === this.statsToken && el === this.statsEl) el.setText('');
+      if (token === this.statsToken && el === this.statsEl && !cached) el.setText('');
     }
   }
 
@@ -181,8 +179,6 @@ export class BackupModal extends Modal {
       );
       progress.finish();
       this.description = '';
-      // Invalidate stats cache
-      this.statsCache = { visible: null, system: null };
       if (this.plugin.settings.showNotifications) {
         new Notice(
           `${t('backup.finished')}\n${result.fileCount} files · ${BackupManager.formatBytes(result.size)}`,
@@ -199,7 +195,7 @@ export class BackupModal extends Modal {
   }
 
   // ============================================================
-  // Restore tab (with lazy pagination)
+  // Restore tab
   // ============================================================
 
   private renderRestoreTab(parent: HTMLElement) {
@@ -224,21 +220,43 @@ export class BackupModal extends Modal {
     if (this.backups.length === 0) {
       parent.createEl('div', { cls: 'simple-sync-empty', text: t('restore.empty') });
     } else {
+      // List container
       const list = parent.createEl('div', { cls: 'simple-sync-list' });
+      list.id = 'simple-sync-restore-list';
+
       const visible = this.backups.slice(0, this.visibleCount);
       for (const entry of visible) this.renderBackupEntry(list, entry);
 
-      // Show-more button
+      // "Show more" button
       if (this.visibleCount < this.backups.length) {
+        const remaining = this.backups.length - this.visibleCount;
+        const nextCount = Math.min(PAGE_SIZE, remaining);
+
         const more = parent.createEl('button', {
-          text: t('restore.showMore', {
-            count: Math.min(PAGE_SIZE, this.backups.length - this.visibleCount),
-          }),
+          text: t('restore.showMore', { count: nextCount }),
           cls: 'simple-sync-show-more',
         });
+
         more.onclick = () => {
+          const oldCount = this.visibleCount;
           this.visibleCount += PAGE_SIZE;
-          this.render();
+          const newItems = this.backups.slice(oldCount, this.visibleCount);
+
+          for (const entry of newItems) {
+            this.renderBackupEntry(list, entry);
+          }
+
+          // Update or remove the show-more button
+          if (this.visibleCount >= this.backups.length) {
+            more.remove();
+          } else {
+            const newRemaining = this.backups.length - this.visibleCount;
+            const newNext = Math.min(PAGE_SIZE, newRemaining);
+            more.setText(t('restore.showMore', { count: newNext }));
+          }
+
+          // Keep scroll on the list itself, don't move the page
+          // (No scroll manipulation needed — DOM append preserves scroll)
         };
       }
     }
@@ -289,24 +307,24 @@ export class BackupModal extends Modal {
   }
 
   private async doRestore(entry: BackupEntry) {
+    const decision = await new Promise<{ confirmed: boolean; includeSystem: boolean }>(
+      (resolve) => {
+        new RestoreConfirmModal(this.app, this.plugin, entry, resolve).open();
+      }
+    );
+
+    if (!decision.confirmed) return;
+
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
-
-    const ok = await askConfirmation(this.app, {
-      title: t('restore.confirmTitle'),
-      message: t('restore.confirmMessage'),
-      confirmText: t('action.confirm'),
-      cancelText: t('action.cancel'),
-      isDangerous: true,
-    });
-    if (!ok) return;
-
     const progress = new ProgressModal(this.app, this.plugin);
     progress.open();
 
     try {
-      const count = await this.manager.restoreBackup(entry, (step, pct) => {
-        progress.update(step, pct);
-      });
+      const count = await this.manager.restoreBackup(
+        entry,
+        decision.includeSystem,
+        (step, pct) => progress.update(step, pct)
+      );
       progress.finish();
       if (this.plugin.settings.showNotifications) {
         new Notice(t('restore.finished', { count }), 6000);
