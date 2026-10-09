@@ -6,6 +6,8 @@ import { askConfirmation } from './confirm-modal';
 
 type Tab = 'backup' | 'restore' | 'about';
 
+const PAGE_SIZE = 7;
+
 export class BackupModal extends Modal {
   plugin: SimpleSyncPlugin;
   manager: BackupManager;
@@ -15,11 +17,13 @@ export class BackupModal extends Modal {
   includeSystem = true;
 
   backups: BackupEntry[] = [];
+  visibleCount = PAGE_SIZE;
   loadingBackups = false;
   backupsError: string | null = null;
 
   private statsEl: HTMLElement | null = null;
   private statsToken = 0;
+  private statsCache: { visible: any; system: any } = { visible: null, system: null };
 
   constructor(app: App, plugin: SimpleSyncPlugin) {
     super(app);
@@ -117,11 +121,27 @@ export class BackupModal extends Modal {
     const el = this.statsEl;
     const token = ++this.statsToken;
 
+    // Use cache if available and fresh (5s TTL)
+    const cacheKey = this.includeSystem ? 'system' : 'visible';
+    const cached = this.statsCache[cacheKey];
+    if (cached && Date.now() - cached.ts < 5000) {
+      el.setText(
+        t('backup.stats', {
+          count: cached.files,
+          folders: cached.folders,
+          size: BackupManager.formatBytes(cached.size),
+        })
+      );
+      return;
+    }
+
     el.setText(t('backup.stats.calculating'));
 
     try {
       const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
       if (token !== this.statsToken || el !== this.statsEl) return;
+
+      this.statsCache[cacheKey] = { files, folders, size, ts: Date.now() };
       el.setText(
         t('backup.stats', {
           count: files,
@@ -161,6 +181,8 @@ export class BackupModal extends Modal {
       );
       progress.finish();
       this.description = '';
+      // Invalidate stats cache
+      this.statsCache = { visible: null, system: null };
       if (this.plugin.settings.showNotifications) {
         new Notice(
           `${t('backup.finished')}\n${result.fileCount} files · ${BackupManager.formatBytes(result.size)}`,
@@ -177,7 +199,7 @@ export class BackupModal extends Modal {
   }
 
   // ============================================================
-  // Restore tab
+  // Restore tab (with lazy pagination)
   // ============================================================
 
   private renderRestoreTab(parent: HTMLElement) {
@@ -203,7 +225,22 @@ export class BackupModal extends Modal {
       parent.createEl('div', { cls: 'simple-sync-empty', text: t('restore.empty') });
     } else {
       const list = parent.createEl('div', { cls: 'simple-sync-list' });
-      for (const entry of this.backups) this.renderBackupEntry(list, entry);
+      const visible = this.backups.slice(0, this.visibleCount);
+      for (const entry of visible) this.renderBackupEntry(list, entry);
+
+      // Show-more button
+      if (this.visibleCount < this.backups.length) {
+        const more = parent.createEl('button', {
+          text: t('restore.showMore', {
+            count: Math.min(PAGE_SIZE, this.backups.length - this.visibleCount),
+          }),
+          cls: 'simple-sync-show-more',
+        });
+        more.onclick = () => {
+          this.visibleCount += PAGE_SIZE;
+          this.render();
+        };
+      }
     }
 
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
@@ -240,6 +277,7 @@ export class BackupModal extends Modal {
   private async loadBackups() {
     this.loadingBackups = true;
     this.backupsError = null;
+    this.visibleCount = PAGE_SIZE;
     this.render();
     try {
       this.backups = await this.manager.listBackups();
