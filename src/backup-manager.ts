@@ -1,4 +1,4 @@
-import { Vault, normalizePath } from 'obsidian';
+import { Vault, normalizePath, TFile } from 'obsidian';
 import JSZip from 'jszip';
 import { GitHubAPI } from './github-api';
 import { SimpleSyncSettings } from './settings';
@@ -8,16 +8,11 @@ const LOCAL_BACKUP_FOLDER = '.backup';
 const SNAPSHOT_PREFIX = 'snapshot';
 const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 
-const READ_CONCURRENCY = 16;
-const WRITE_CONCURRENCY = 12;
-const STAT_CONCURRENCY = 32;
-const WALK_CHUNK = 8;
+const READ_CONCURRENCY = 24;
+const WRITE_CONCURRENCY = 16;
+const STAT_CONCURRENCY = 64;
+const FOLDER_WALK_CONCURRENCY = 32;
 
-/**
- * File extensions that are already compressed. Store them without re-deflating
- * to save time and produce a smaller ZIP (double compression wastes CPU
- * and often increases size).
- */
 const STORE_EXTENSIONS = new Set([
   'zip', 'gz', 'bz2', 'xz', '7z', 'rar', 'tar', 'zst', 'br',
   'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif',
@@ -54,10 +49,20 @@ export interface VaultStats {
   size: number;
 }
 
+interface PathSet {
+  files: string[];
+  folders: string[];
+}
+
+// ============================================================
+// Concurrency helper — bounded worker pool
+// ============================================================
+
 async function mapConcurrent<T, R>(
   items: T[],
   limit: number,
-  fn: (item: T, index: number) => Promise<R>
+  fn: (item: T, index: number) => Promise<R>,
+  failFast = true
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   const errors: any[] = [];
@@ -74,43 +79,33 @@ async function mapConcurrent<T, R>(
             results[idx] = await fn(items[idx], idx);
           } catch (e) {
             errors.push(e);
+            if (failFast) throw e;
           }
         }
       })()
     );
   }
-  await Promise.all(workers);
-  if (errors.length > 0) throw errors[0];
+  await Promise.allSettled(workers);
+  if (failFast && errors.length > 0) throw errors[0];
   return results;
 }
 
-async function mapConcurrentSafe<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workerCount = Math.min(limit, items.length);
-  const workers: Promise<void>[] = [];
-  for (let w = 0; w < workerCount; w++) {
-    workers.push(
-      (async () => {
-        while (true) {
-          const idx = cursor++;
-          if (idx >= items.length) break;
-          try {
-            results[idx] = await fn(items[idx], idx);
-          } catch {
-            // swallow
-          }
-        }
-      })()
-    );
+// ============================================================
+// Fast size lookup — try cached size first, fall back to stat
+// ============================================================
+
+async function statSize(vault: Vault, path: string): Promise<number> {
+  try {
+    const st = await vault.adapter.stat(path);
+    return st?.size ?? 0;
+  } catch {
+    return 0;
   }
-  await Promise.all(workers);
-  return results;
 }
+
+// ============================================================
+// BackupManager
+// ============================================================
 
 export class BackupManager {
   constructor(
@@ -124,28 +119,142 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Stats (fast, parallel, includes folder count)
+  // FAST PATH: count files + folders + size
+  //
+  // Strategy:
+  //   1. Use vault.getFiles() for visible files — instant, uses Obsidian's cache
+  //   2. Walk only hidden/system folders via adapter (few folders, fast)
+  //   3. Sum sizes: cached for visible, stat in parallel for hidden
   // ============================================================
 
   async countFilesAndSize(includeSystem: boolean): Promise<VaultStats> {
-    const { files, folders } = await this.collectAllPaths(includeSystem);
-
-    // Sum sizes in parallel. adapter.stat is the only reliable way to get sizes
-    // for hidden/system files that Obsidian's vault cache doesn't track.
+    const visibleFiles = this.vault.getFiles();
+    let files = 0;
+    let folders = 0;
     let size = 0;
-    let statErrors = 0;
 
-    await mapConcurrentSafe(files, STAT_CONCURRENCY, async (p) => {
+    // Visible files: instant count + instant size (no stat needed)
+    for (const f of visibleFiles) {
+      if (this.isInsideLocalBackup(f.path)) continue;
+      if (!includeSystem && this.isSystemPath(f.path)) continue;
+      files++;
+      size += f.stat.size;
+    }
+
+    if (includeSystem) {
+      // Walk system folders only
+      const hidden = await this.walkSystemFolders();
+      const hiddenFiles = hidden.files.filter((p) => !this.isInsideLocalBackup(p));
+      files += hiddenFiles.length;
+      folders += hidden.folders.length;
+
+      // Parallel stat for hidden files (they have no cached size)
+      const sizes = await mapConcurrent(hiddenFiles, STAT_CONCURRENCY, (p) =>
+        statSize(this.vault, p), false
+      );
+      for (const s of sizes) size += s || 0;
+    }
+
+    // Count visible folders from vault's folder tree
+    folders += this.countVisibleFolders();
+
+    return { files, folders, size };
+  }
+
+  // ============================================================
+  // Walk only system folders (.obsidian, .trash, .git)
+  // ============================================================
+
+  private async walkSystemFolders(): Promise<PathSet> {
+    const files: string[] = [];
+    const folders: string[] = [];
+
+    const walk = async (folder: string): Promise<void> => {
+      let listing;
       try {
-        const st = await this.vault.adapter.stat(p);
-        if (st && typeof st.size === 'number') size += st.size;
+        listing = await this.vault.adapter.list(folder);
       } catch {
-        statErrors++;
+        return;
       }
-      return null;
-    });
 
-    return { files: files.length, folders: folders.length, size };
+      for (const f of listing.files) files.push(f);
+
+      // Parallel subfolder recursion
+      const subs = listing.folders;
+      await mapConcurrent(subs, FOLDER_WALK_CONCURRENCY, async (sf) => {
+        folders.push(sf);
+        await walk(sf);
+        return null;
+      }, false);
+    };
+
+    for (const sys of SYSTEM_FOLDERS) {
+      try {
+        const exists = await this.vault.adapter.exists(sys);
+        if (!exists) continue;
+        folders.push(sys);
+        await walk(sys);
+      } catch {}
+    }
+
+    return { files, folders };
+  }
+
+  private countVisibleFolders(): number {
+    // Use the vault's cached folder tree — no I/O needed
+    let count = 0;
+    const root = this.vault.getRoot();
+    const visit = (folder: any) => {
+      for (const child of folder.children) {
+        if (child.children !== undefined) {
+          count++;
+          visit(child);
+        }
+      }
+    };
+    visit(root);
+    return count;
+  }
+
+  // ============================================================
+  // FULL WALK (for backup) — parallel, chunked
+  // ============================================================
+
+  private async collectAllPaths(includeSystem: boolean): Promise<PathSet> {
+    // Fast path: only visible files → use vault.getFiles()
+    if (!includeSystem) {
+      const files = this.vault
+        .getFiles()
+        .filter((f) => !this.isInsideLocalBackup(f.path) && !this.isSystemPath(f.path))
+        .map((f) => f.path);
+      return { files, folders: [] };
+    }
+
+    // Full walk: visible + system, all via adapter
+    const files: string[] = [];
+    const folders: string[] = [];
+
+    const walk = async (folder: string): Promise<void> => {
+      let listing;
+      try {
+        listing = await this.vault.adapter.list(folder);
+      } catch {
+        return;
+      }
+      for (const f of listing.files) {
+        if (this.isInsideLocalBackup(f)) continue;
+        files.push(f);
+      }
+      const subs = listing.folders.filter((sf) => !this.isInsideLocalBackup(sf));
+      await mapConcurrent(subs, FOLDER_WALK_CONCURRENCY, async (sf) => {
+        folders.push(sf);
+        await walk(sf);
+        return null;
+      }, false);
+    };
+
+    await walk('');
+    return { files, folders };
   }
 
   // ============================================================
@@ -168,7 +277,7 @@ export class BackupManager {
     let succeeded = 0;
     let processed = 0;
 
-    await mapConcurrentSafe(paths, READ_CONCURRENCY, async (path) => {
+    await mapConcurrent(paths, READ_CONCURRENCY, async (path) => {
       try {
         const content = await this.vault.adapter.readBinary(path);
         const store = this.shouldStore(path);
@@ -184,7 +293,7 @@ export class BackupManager {
         onProgress('creating', pct);
       }
       return null;
-    });
+    }, false);
 
     if (succeeded === 0) throw new Error('No files could be read');
 
@@ -200,7 +309,6 @@ export class BackupManager {
       }
     );
 
-    // Folder name
     const now = new Date();
     const datePath = formatJalaliPath(toJalali(now));
     const baseFolder = `${this.settings.backupFolder}/${datePath}`;
@@ -227,11 +335,10 @@ export class BackupManager {
     );
 
     onProgress('uploading', 88);
-
     onProgress('localCopy', 92);
     const localPath = await this.saveLocalMirror(folder, zipName, blob, readme);
-
     onProgress('localCopy', 100);
+
     return { folder, localPath, fileCount: succeeded, size: totalBytes };
   }
 
@@ -256,26 +363,30 @@ export class BackupManager {
 
     const folderArr = Array.from(folders.entries()).filter(([, e]) => e.zip);
 
-    const results = await mapConcurrentSafe(folderArr, 6, async ([folderPath, entry]) => {
-      let description = '';
-      try {
-        if (entry.readme) {
-          const text = await this.github.getFileText(entry.readme.path);
-          description = this.extractDescription(text || '');
-        }
-      } catch {}
-      const lastSegment = folderPath.split('/').pop() || folderPath;
-      const out: BackupEntry = {
-        folder: folderPath,
-        date: lastSegment,
-        description,
-        zipPath: entry.zip.path,
-        readmePath: entry.readme?.path || '',
-        zipName: entry.zip.path.split('/').pop() || 'backup.zip',
-        size: entry.zip.size,
-      };
-      return out;
-    });
+    const results = await mapConcurrent(
+      folderArr,
+      8,
+      async ([folderPath, entry]) => {
+        let description = '';
+        try {
+          if (entry.readme) {
+            const text = await this.github.getFileText(entry.readme.path);
+            description = this.extractDescription(text || '');
+          }
+        } catch {}
+        const lastSegment = folderPath.split('/').pop() || folderPath;
+        return {
+          folder: folderPath,
+          date: lastSegment,
+          description,
+          zipPath: entry.zip.path,
+          readmePath: entry.readme?.path || '',
+          zipName: entry.zip.path.split('/').pop() || 'backup.zip',
+          size: entry.zip.size,
+        } as BackupEntry;
+      },
+      false
+    );
 
     const result = results.filter(Boolean) as BackupEntry[];
     return result.sort((a, b) => b.date.localeCompare(a.date));
@@ -293,7 +404,6 @@ export class BackupManager {
     const zip = await JSZip.loadAsync(zipBuffer);
     const entries = Object.entries(zip.files).filter(([, e]: any) => !e.dir) as [string, any][];
 
-    // Pre-create all parent folders (deduped, shallow first)
     const folderSet = new Set<string>();
     for (const [path] of entries) {
       const parts = path.split('/');
@@ -316,21 +426,26 @@ export class BackupManager {
 
     let count = 0;
     let processed = 0;
-    await mapConcurrentSafe(entries, WRITE_CONCURRENCY, async ([path, file]) => {
-      try {
-        const content = await file.async('arraybuffer');
-        await this.vault.adapter.writeBinary(normalizePath(path), content);
-        count++;
-      } catch (e) {
-        console.warn('[Simple SYNC] restore failed:', path, e);
-      }
-      processed++;
-      if (processed % 20 === 0 || processed === entries.length) {
-        const pct = 45 + Math.floor((processed / entries.length) * 55);
-        onProgress('extracting', pct);
-      }
-      return null;
-    });
+    await mapConcurrent(
+      entries,
+      WRITE_CONCURRENCY,
+      async ([path, file]) => {
+        try {
+          const content = await file.async('arraybuffer');
+          await this.vault.adapter.writeBinary(normalizePath(path), content);
+          count++;
+        } catch (e) {
+          console.warn('[Simple SYNC] restore failed:', path, e);
+        }
+        processed++;
+        if (processed % 20 === 0 || processed === entries.length) {
+          const pct = 45 + Math.floor((processed / entries.length) * 55);
+          onProgress('extracting', pct);
+        }
+        return null;
+      },
+      false
+    );
 
     onProgress('extracting', 100);
     return count;
@@ -367,18 +482,23 @@ export class BackupManager {
 
     let count = 0;
     let processed = 0;
-    await mapConcurrentSafe(paths, READ_CONCURRENCY, async (path) => {
-      try {
-        const content = await this.vault.adapter.readBinary(path);
-        await this.vault.adapter.writeBinary(`${folder}/${path}`, content);
-        count++;
-      } catch {}
-      processed++;
-      if (processed % 20 === 0 && paths.length > 0) {
-        onProgress('snapshotting', 3 + Math.floor((processed / paths.length) * 22));
-      }
-      return null;
-    });
+    await mapConcurrent(
+      paths,
+      READ_CONCURRENCY,
+      async (path) => {
+        try {
+          const content = await this.vault.adapter.readBinary(path);
+          await this.vault.adapter.writeBinary(`${folder}/${path}`, content);
+          count++;
+        } catch {}
+        processed++;
+        if (processed % 20 === 0 && paths.length > 0) {
+          onProgress('snapshotting', 3 + Math.floor((processed / paths.length) * 22));
+        }
+        return null;
+      },
+      false
+    );
     onProgress('snapshotting', 25);
     return folder;
   }
@@ -409,47 +529,8 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Path walking (parallel with chunked recursion)
+  // Helpers
   // ============================================================
-
-  private async collectAllPaths(
-    includeSystem: boolean
-  ): Promise<{ files: string[]; folders: string[] }> {
-    const files: string[] = [];
-    const folders: string[] = [];
-
-    const walk = async (folder: string): Promise<void> => {
-      let listing;
-      try {
-        listing = await this.vault.adapter.list(folder);
-      } catch {
-        return;
-      }
-
-      for (const filePath of listing.files) {
-        if (this.isInsideLocalBackup(filePath)) continue;
-        if (!includeSystem && this.isSystemPath(filePath)) continue;
-        files.push(filePath);
-      }
-
-      const subfolders = listing.folders.filter(
-        (sf) => !this.isInsideLocalBackup(sf) && (includeSystem || !this.isSystemPath(sf))
-      );
-
-      for (let i = 0; i < subfolders.length; i += WALK_CHUNK) {
-        const chunk = subfolders.slice(i, i + WALK_CHUNK);
-        await Promise.all(
-          chunk.map(async (sf) => {
-            folders.push(sf);
-            await walk(sf);
-          })
-        );
-      }
-    };
-
-    await walk('');
-    return { files, folders };
-  }
 
   private isInsideLocalBackup(path: string): boolean {
     return path === LOCAL_BACKUP_FOLDER || path.startsWith(LOCAL_BACKUP_FOLDER + '/');
