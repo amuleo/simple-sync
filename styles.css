@@ -1,14 +1,9 @@
 /* ============================================================
    Simple SYNC — Styles
-   Mobile-first with desktop enhancements.
    ============================================================ */
 
-/* ---------- RTL helper ---------- */
-.simple-sync-rtl {
-  text-align: right;
-}
+.simple-sync-rtl { text-align: right; }
 
-/* ---------- Status bar ---------- */
 .simple-sync-status-bar {
   cursor: pointer;
   padding: 0 8px;
@@ -16,56 +11,19 @@
 }
 
 /* ============================================================
-   Native modal title + back button
-   ============================================================ */
-
-.simple-sync-modal .modal-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.simple-sync-back-btn {
-  background: transparent;
-  border: none;
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0 6px;
-  border-radius: var(--radius-s);
-  transition: background 0.15s ease, color 0.15s ease;
-  font-family: inherit;
-  flex-shrink: 0;
-}
-
-.simple-sync-back-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-.simple-sync-title-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ============================================================
-   Tabs
+   Tabs (simple, native-feel)
    ============================================================ */
 
 .simple-sync-tabs {
   display: flex;
-  gap: 6px;
-  margin-bottom: 20px;
+  gap: 4px;
+  margin-bottom: 18px;
   border-bottom: 1px solid var(--background-modifier-border);
-  padding-bottom: 4px;
+  padding-bottom: 2px;
 }
 
 .simple-sync-tab {
-  padding: 10px 14px;
+  padding: 8px 14px;
   font-size: 13px;
   background: transparent;
   border: none;
@@ -75,12 +33,12 @@
   font-family: inherit;
   flex: 1;
   transition: all 0.15s ease;
+  border-radius: var(--radius-s) var(--radius-s) 0 0;
 }
 
 .simple-sync-tab:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
-  border-radius: var(--radius-s);
 }
 
 .simple-sync-tab.is-active {
@@ -90,16 +48,12 @@
 }
 
 /* ============================================================
-   Body / Sections
+   Sections
    ============================================================ */
 
-.simple-sync-body {
-  padding-top: 4px;
-}
+.simple-sync-body { padding-top: 4px; }
 
-.simple-sync-section {
-  margin-bottom: 24px;
-}
+.simple-sync-section { margin-bottom: 20px; }
 
 .simple-sync-section h3 {
   margin: 0 0 6px 0;
@@ -114,13 +68,19 @@
   line-height: 1.5;
 }
 
+.simple-sync-subtitle {
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 /* ============================================================
    Stats line
    ============================================================ */
 
 .simple-sync-stats-line {
   padding: 12px 14px;
-  margin: 16px 0;
+  margin: 14px 0;
   background: var(--background-secondary);
   border-radius: var(--radius-m);
   font-size: 13px;
@@ -148,7 +108,7 @@
    ============================================================ */
 
 .simple-sync-empty {
-  padding: 48px 20px;
+  padding: 44px 20px;
   text-align: center;
   color: var(--text-muted);
   font-size: 14px;
@@ -159,7 +119,7 @@
 
 .simple-sync-loading {
   text-align: center;
-  padding: 40px 20px;
+  padding: 36px 20px;
   color: var(--text-muted);
   font-size: 14px;
 }
@@ -171,7 +131,7 @@
 }
 
 /* ============================================================
-   Backup list
+   List
    ============================================================ */
 
 .simple-sync-list {
@@ -186,38 +146,30 @@
 .simple-sync-list-item {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
   transition: background 0.15s ease;
 }
 
-.simple-sync-list-item:last-child {
-  border-bottom: none;
-}
+.simple-sync-list-item:last-child { border-bottom: none; }
+.simple-sync-list-item:hover { background: var(--background-modifier-hover); }
 
-.simple-sync-list-item:hover {
-  background: var(--background-modifier-hover);
-}
-
-.simple-sync-list-info {
-  width: 100%;
-  min-width: 0;
-}
+.simple-sync-list-info { width: 100%; min-width: 0; }
 
 .simple-sync-list-title {
   font-weight: 600;
   font-size: 14px;
   word-break: break-all;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .simple-sync-list-desc {
   font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   word-break: break-word;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .simple-sync-list-meta {
@@ -226,12 +178,13 @@
   font-family: var(--font-monospace);
 }
 
-/* Full-width restore button */
+/* Restore button — full width, 25% shorter */
 .simple-sync-restore-btn {
   width: 100%;
-  padding: 6px 14px;
-  font-size: 13px;
-  min-height: 26px;
+  padding: 4px 12px;
+  font-size: 12px;
+  min-height: 22px;
+  height: 22px;
   line-height: 1;
   border-radius: var(--radius-s);
   cursor: pointer;
@@ -244,11 +197,9 @@
   transition: opacity 0.15s ease;
 }
 
-.simple-sync-restore-btn:hover {
-  opacity: 0.9;
-}
+.simple-sync-restore-btn:hover { opacity: 0.9; }
 
-/* Show-more button */
+/* Show-more */
 .simple-sync-show-more {
   width: 100%;
   padding: 10px 14px;
@@ -263,44 +214,37 @@
   transition: background 0.15s ease;
 }
 
-.simple-sync-show-more:hover {
-  background: var(--background-modifier-hover);
-}
+.simple-sync-show-more:hover { background: var(--background-modifier-hover); }
 
-/* Info box used in restore confirmation */
+/* Info box */
 .simple-sync-info-box {
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   padding: 12px 14px;
-  margin: 16px 0;
+  margin: 14px 0;
   text-align: start;
 }
 
-.simple-sync-info-box .simple-sync-list-title {
-  margin-bottom: 6px;
-}
-
-.simple-sync-info-box .simple-sync-list-desc {
-  margin-bottom: 6px;
-}
+.simple-sync-info-box .simple-sync-list-title { margin-bottom: 6px; }
+.simple-sync-info-box .simple-sync-list-desc { margin-bottom: 6px; }
 
 /* ============================================================
-   Modal footer & buttons
+   Footer / buttons
    ============================================================ */
 
 .simple-sync-modal-footer {
   display: flex;
   gap: 10px;
-  margin-top: 24px;
-  padding-top: 16px;
+  margin-top: 20px;
+  padding-top: 14px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
 .simple-sync-modal-footer button {
   flex: 1;
-  min-height: 42px;
-  padding: 12px 18px;
+  min-height: 40px;
+  padding: 10px 16px;
   font-size: 14px;
   border-radius: var(--radius-m);
   cursor: pointer;
@@ -309,42 +253,53 @@
 }
 
 .simple-sync-btn-lg {
-  min-height: 44px;
-  padding: 12px 20px;
+  min-height: 42px;
+  padding: 10px 18px;
+}
+
+.simple-sync-cancel-btn {
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.simple-sync-cancel-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.simple-sync-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ============================================================
-   Confirm modal
+   Confirm modals
    ============================================================ */
 
-.simple-sync-confirm {
-  padding: 4px 4px 8px;
-}
+.simple-sync-confirm { padding: 4px 4px 8px; }
 
 .simple-sync-confirm-message {
   color: var(--text-muted);
-  margin: 16px 0;
+  margin: 14px 0;
   line-height: 1.6;
   word-break: break-word;
   font-size: 14px;
   text-align: center;
 }
 
-.simple-sync-confirm-message p {
-  margin: 6px 0;
-}
+.simple-sync-confirm-message p { margin: 6px 0; }
 
 .simple-sync-confirm-buttons {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 24px;
+  margin-top: 20px;
 }
 
 .simple-sync-confirm-buttons button {
-  padding: 14px 18px;
+  padding: 12px 18px;
   font-size: 14px;
-  min-height: 46px;
+  min-height: 42px;
   width: 100%;
   border-radius: var(--radius-m);
   cursor: pointer;
@@ -359,11 +314,10 @@
   max-width: min(420px, calc(100vw - 32px));
   width: 100%;
   box-sizing: border-box;
-  z-index: var(--layer-modal);
 }
 
 .simple-sync-progress-modal .modal-content {
-  padding: 20px 22px 22px;
+  padding: 16px 20px 20px;
 }
 
 .simple-sync-progress-step {
@@ -390,7 +344,7 @@
 }
 
 .simple-sync-progress-percent {
-  margin-top: 12px;
+  margin-top: 10px;
   text-align: center;
   font-size: 12px;
   color: var(--text-muted);
@@ -398,35 +352,33 @@
 }
 
 /* ============================================================
-   Guide modal
+   Guide
    ============================================================ */
 
 .simple-sync-guide-body {
   max-height: 440px;
   overflow-y: auto;
-  padding: 16px 6px;
+  padding: 12px 4px;
   line-height: 1.7;
 }
 
 .simple-sync-guide-body h3 {
-  margin: 0 0 16px 0;
-  font-size: 17px;
+  margin: 0 0 14px 0;
+  font-size: 16px;
   color: var(--text-accent);
 }
 
 .simple-sync-guide-line {
-  margin: 8px 0;
+  margin: 6px 0;
   font-size: 14px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.simple-sync-guide-spacer {
-  height: 10px;
-}
+.simple-sync-guide-spacer { height: 8px; }
 
 /* ============================================================
-   Pre block (About tab)
+   Pre block
    ============================================================ */
 
 .simple-sync-pre {
@@ -443,35 +395,19 @@
 }
 
 /* ============================================================
-   RTL dynamic overrides (Persian)
+   RTL overrides
    ============================================================ */
 
-.simple-sync-rtl .checkbox-container {
-  transform: scaleX(-1);
-}
-
-.simple-sync-rtl .setting-item {
-  direction: rtl;
-}
-
+.simple-sync-rtl .checkbox-container { transform: scaleX(-1); }
+.simple-sync-rtl .setting-item { direction: rtl; }
 .simple-sync-rtl .setting-item-name,
-.simple-sync-rtl .setting-item-description {
-  text-align: right;
-}
+.simple-sync-rtl .setting-item-description { text-align: right; }
 
 .simple-sync-rtl .simple-sync-list-title,
 .simple-sync-rtl .simple-sync-list-desc,
-.simple-sync-rtl .simple-sync-list-meta {
-  text-align: right;
-}
+.simple-sync-rtl .simple-sync-list-meta { text-align: right; }
 
-.simple-sync-rtl .simple-sync-restore-btn {
-  text-align: center;
-}
-
-/* ============================================================
-   Toggle disabled
-   ============================================================ */
+.simple-sync-rtl .simple-sync-restore-btn { text-align: center; }
 
 .simple-sync-toggle-disabled .checkbox-container {
   opacity: 0.5;
@@ -479,39 +415,17 @@
 }
 
 /* ============================================================
-   Mobile (≤ 600px) — priority
+   Mobile (≤ 600px)
    ============================================================ */
 
 @media (max-width: 600px) {
-  .simple-sync-tabs {
-    gap: 4px;
-  }
-
-  .simple-sync-tab {
-    padding: 10px 6px;
-    font-size: 12px;
-  }
-
-  .simple-sync-modal-footer {
-    flex-direction: column;
-  }
-
-  .simple-sync-confirm-buttons {
-    flex-direction: column;
-  }
-
-  .simple-sync-list-item {
-    padding: 12px 14px;
-  }
-
-  .simple-sync-restore-btn {
-    min-height: 28px;
-    font-size: 12px;
-  }
-
-  .simple-sync-guide-body {
-    max-height: 55vh;
-  }
+  .simple-sync-tabs { gap: 2px; }
+  .simple-sync-tab { padding: 8px 6px; font-size: 12px; }
+  .simple-sync-modal-footer { flex-direction: column; }
+  .simple-sync-confirm-buttons { flex-direction: column; }
+  .simple-sync-list-item { padding: 10px 12px; }
+  .simple-sync-restore-btn { min-height: 24px; height: 24px; font-size: 11px; }
+  .simple-sync-guide-body { max-height: 55vh; }
 
   .simple-sync-progress-modal {
     max-width: calc(100vw - 24px);
@@ -519,72 +433,24 @@
   }
 
   .simple-sync-progress-modal .modal-content {
-    padding: 18px 18px 20px;
-  }
-
-  .simple-sync-back-btn {
-    font-size: 22px;
+    padding: 14px 16px 18px;
   }
 }
 
 /* ============================================================
-   Desktop (≥ 700px) — enhancements
+   Desktop (≥ 700px)
    ============================================================ */
 
 @media (min-width: 700px) {
-  .simple-sync-confirm-buttons {
-    flex-direction: row-reverse;
-  }
-
-  .simple-sync-modal-footer {
-    flex-direction: row;
-  }
-
-  .simple-sync-list-item {
-    padding: 14px 18px;
-  }
-
-  /* Wider modals on desktop */
-  .simple-sync-modal {
-    min-width: 480px;
-    max-width: 640px;
-  }
-
-  /* Guide can be wider */
-  .simple-sync-modal:has(.simple-sync-guide-body) {
-    max-width: 720px;
-  }
-
-  /* Hover effects are more noticeable on desktop */
-  .simple-sync-tab:hover {
-    color: var(--text-normal);
-  }
-
-  .simple-sync-list-item:hover {
-    background: var(--background-modifier-hover);
-  }
-
-  /* Two-column layout for confirm buttons on desktop */
-  .simple-sync-confirm-buttons button {
-    flex: 1;
-    width: auto;
-  }
-
-  .simple-sync-guide-body {
-    max-height: 520px;
-  }
+  .simple-sync-confirm-buttons { flex-direction: row-reverse; }
+  .simple-sync-modal-footer { flex-direction: row; }
+  .simple-sync-list-item { padding: 12px 16px; }
+  .simple-sync-modal { min-width: 480px; max-width: 640px; }
+  .simple-sync-modal:has(.simple-sync-guide-body) { max-width: 720px; }
+  .simple-sync-guide-body { max-height: 520px; }
 }
 
-/* ============================================================
-   Large desktop (≥ 1100px)
-   ============================================================ */
-
 @media (min-width: 1100px) {
-  .simple-sync-modal {
-    max-width: 680px;
-  }
-
-  .simple-sync-modal:has(.simple-sync-guide-body) {
-    max-width: 780px;
-  }
+  .simple-sync-modal { max-width: 680px; }
+  .simple-sync-modal:has(.simple-sync-guide-body) { max-width: 780px; }
 }
