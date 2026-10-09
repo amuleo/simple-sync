@@ -33,9 +33,26 @@ export class BackupModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('simple-sync-modal-marker');
-    this.plugin.i18n.applyDirection(contentEl);
+    this.modalEl.addClass('simple-sync-modal');
+    this.plugin.i18n.applyDirection(this.modalEl);
+    contentEl.addClass('simple-sync-body-root');
+
+    // Native title
+    this.titleEl.setText(this.plugin.i18n.t('modal.title'));
+
     this.render();
+
+    // Prefetch both stats variants in background
+    this.prefetchStats();
+  }
+
+  private prefetchStats() {
+    // Current selection first
+    this.manager.countFilesAndSize(this.includeSystem).catch(() => {});
+    // Other variant in background
+    window.setTimeout(() => {
+      this.manager.countFilesAndSize(!this.includeSystem).catch(() => {});
+    }, 400);
   }
 
   private render() {
@@ -43,9 +60,10 @@ export class BackupModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    const header = contentEl.createEl('div', { cls: 'simple-sync-header' });
-    header.createEl('h2', { text: t('modal.title') });
-    header.createEl('p', { text: t('modal.subtitle'), cls: 'simple-sync-subtitle' });
+    const subtitle = contentEl.createEl('p', {
+      text: t('modal.subtitle'),
+      cls: 'simple-sync-subtitle',
+    });
 
     const tabs = contentEl.createEl('div', { cls: 'simple-sync-tabs' });
     this.tab(tabs, 'backup', t('modal.tab.backup'));
@@ -121,7 +139,6 @@ export class BackupModal extends Modal {
     const el = this.statsEl;
     const token = ++this.statsToken;
 
-    // Show cached value instantly if available
     const cached = this.manager.getCachedStats(this.includeSystem);
     if (cached) {
       el.setText(
@@ -136,9 +153,7 @@ export class BackupModal extends Modal {
     }
 
     try {
-      const { files, folders, size } = await this.manager.countFilesAndSize(
-        this.includeSystem
-      );
+      const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
       if (token !== this.statsToken || el !== this.statsEl) return;
       el.setText(
         t('backup.stats', {
@@ -220,14 +235,12 @@ export class BackupModal extends Modal {
     if (this.backups.length === 0) {
       parent.createEl('div', { cls: 'simple-sync-empty', text: t('restore.empty') });
     } else {
-      // List container
       const list = parent.createEl('div', { cls: 'simple-sync-list' });
       list.id = 'simple-sync-restore-list';
 
       const visible = this.backups.slice(0, this.visibleCount);
       for (const entry of visible) this.renderBackupEntry(list, entry);
 
-      // "Show more" button
       if (this.visibleCount < this.backups.length) {
         const remaining = this.backups.length - this.visibleCount;
         const nextCount = Math.min(PAGE_SIZE, remaining);
@@ -241,22 +254,13 @@ export class BackupModal extends Modal {
           const oldCount = this.visibleCount;
           this.visibleCount += PAGE_SIZE;
           const newItems = this.backups.slice(oldCount, this.visibleCount);
-
-          for (const entry of newItems) {
-            this.renderBackupEntry(list, entry);
-          }
-
-          // Update or remove the show-more button
-          if (this.visibleCount >= this.backups.length) {
-            more.remove();
-          } else {
+          for (const entry of newItems) this.renderBackupEntry(list, entry);
+          if (this.visibleCount >= this.backups.length) more.remove();
+          else {
             const newRemaining = this.backups.length - this.visibleCount;
             const newNext = Math.min(PAGE_SIZE, newRemaining);
             more.setText(t('restore.showMore', { count: newNext }));
           }
-
-          // Keep scroll on the list itself, don't move the page
-          // (No scroll manipulation needed — DOM append preserves scroll)
         };
       }
     }
