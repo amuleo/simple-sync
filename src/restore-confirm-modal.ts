@@ -23,26 +23,49 @@ export class RestoreConfirmModal extends Modal {
     this.plugin = plugin;
     this.entry = entry;
     this.resolver = resolver;
-    this.includeSystem = true;
+    // Default on only if we are sure the backup has system files
+    this.includeSystem = entry.hasSystemFiles === 'yes';
   }
 
   onOpen() {
     const t = (k: string, v?: any) => this.plugin.i18n.t(k, v);
     const { contentEl } = this;
+    this.modalEl.addClass('simple-sync-modal');
+    this.plugin.i18n.applyDirection(this.modalEl);
     contentEl.addClass('simple-sync-confirm');
-    contentEl.addClass('simple-sync-modal-marker');
-    this.plugin.i18n.applyDirection(contentEl);
 
-    contentEl.createEl('h3', { text: t('restore.confirmTitle') });
+    // Native title
+    this.titleEl.setText(t('restore.confirmTitle'));
+
+    // Back button in top-left
+    const backBtn = this.titleEl.createEl('button', {
+      cls: 'simple-sync-back-btn',
+      text: '‹',
+      attr: { 'aria-label': t('action.back') },
+    });
+    backBtn.onclick = () => {
+      this.resolver({ confirmed: false, includeSystem: false });
+      this.close();
+    };
+    // Move title text after back button
+    this.titleEl.appendChild(
+      this.titleEl.createEl('span', {
+        text: t('restore.confirmTitle'),
+        cls: 'simple-sync-title-text',
+      })
+    );
+
     contentEl.createEl('p', {
       text: t('restore.confirmMessage'),
       cls: 'simple-sync-confirm-message',
     });
 
-    // Info about the backup
+    // Backup info
     const info = contentEl.createEl('div', { cls: 'simple-sync-info-box' });
-    const row1 = info.createEl('div', { cls: 'simple-sync-info-row' });
-    row1.createEl('span', { text: this.entry.date, cls: 'simple-sync-list-title' });
+    info.createEl('div', {
+      text: this.entry.date,
+      cls: 'simple-sync-list-title',
+    });
     if (this.entry.description) {
       info.createEl('div', {
         text: this.entry.description,
@@ -54,20 +77,39 @@ export class RestoreConfirmModal extends Modal {
       cls: 'simple-sync-list-meta',
     });
 
-    // System files toggle — only if backup contains them
-    if (this.entry.hasSystemFiles) {
-      new Setting(contentEl)
-        .setName(t('restore.includeSystem'))
-        .setDesc(t('restore.includeSystem.desc'))
-        .addToggle((tg) =>
-          tg.setValue(this.includeSystem).onChange((v) => {
-            this.includeSystem = v;
-          })
-        );
+    // ---- System files toggle — ALWAYS shown ----
+    const status = this.entry.hasSystemFiles || 'unknown';
+    let descText = '';
+    let disabled = false;
+
+    if (status === 'yes') {
+      descText = t('restore.includeSystem.desc');
+      // default on
+    } else if (status === 'no') {
+      descText = t('restore.includeSystem.none');
+      disabled = true;
+      this.includeSystem = false;
+    } else {
+      descText = t('restore.includeSystem.unknown');
+      // default off, but user can enable
     }
 
+    const setting = new Setting(contentEl)
+      .setName(t('restore.includeSystem'))
+      .setDesc(descText)
+      .addToggle((tg) => {
+        tg.setValue(this.includeSystem).onChange((v) => {
+          this.includeSystem = v;
+        });
+        if (disabled) tg.setDisabled(true);
+      });
+
+    if (disabled) setting.settingEl.addClass('simple-sync-toggle-disabled');
+
     // Buttons
-    const buttons = contentEl.createEl('div', { cls: 'simple-sync-confirm-buttons' });
+    const buttons = contentEl.createEl('div', {
+      cls: 'simple-sync-confirm-buttons',
+    });
 
     const cancel = buttons.createEl('button', { text: t('action.cancel') });
     cancel.onclick = () => {
@@ -82,7 +124,7 @@ export class RestoreConfirmModal extends Modal {
     ok.onclick = () => {
       this.resolver({
         confirmed: true,
-        includeSystem: this.entry.hasSystemFiles ? this.includeSystem : true,
+        includeSystem: this.includeSystem,
       });
       this.close();
     };
