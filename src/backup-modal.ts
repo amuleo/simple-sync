@@ -117,12 +117,10 @@ export class BackupModal extends Modal {
     const el = this.statsEl;
     const token = ++this.statsToken;
 
-    // Show loading text immediately
     el.setText(t('backup.stats.calculating'));
 
     try {
       const { files, folders, size } = await this.manager.countFilesAndSize(this.includeSystem);
-      // Ignore stale results
       if (token !== this.statsToken || el !== this.statsEl) return;
       el.setText(
         t('backup.stats', {
@@ -209,7 +207,10 @@ export class BackupModal extends Modal {
     }
 
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
-    const refresh = footer.createEl('button', { text: t('action.refresh'), cls: 'simple-sync-btn-lg' });
+    const refresh = footer.createEl('button', {
+      text: t('action.refresh'),
+      cls: 'simple-sync-btn-lg',
+    });
     refresh.onclick = () => this.loadBackups();
   }
 
@@ -296,7 +297,10 @@ export class BackupModal extends Modal {
     pre.setText(t('about.safety.text'));
 
     const footer = parent.createEl('div', { cls: 'simple-sync-modal-footer' });
-    const guide = footer.createEl('button', { text: t('action.guide'), cls: 'simple-sync-btn-lg' });
+    const guide = footer.createEl('button', {
+      text: t('action.guide'),
+      cls: 'simple-sync-btn-lg',
+    });
     guide.onclick = () => {
       this.close();
       this.plugin.openGuide();
@@ -304,6 +308,6 @@ export class BackupModal extends Modal {
   }
 
   onClose() {
-    this.contentEl.clear();
+    this.contentEl.empty();
   }
 }
