@@ -166,7 +166,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
   transition: background 0.15s ease;
 }
@@ -188,13 +188,13 @@
   font-weight: 600;
   font-size: 14px;
   word-break: break-all;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .simple-sync-list-desc {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   word-break: break-word;
   line-height: 1.4;
 }
@@ -207,14 +207,21 @@
 
 .simple-sync-list-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
 
+/* Smaller, aligned restore button */
 .simple-sync-list-actions button {
-  padding: 8px 14px;
-  font-size: 13px;
-  min-height: 36px;
+  padding: 5px 12px;
+  font-size: 12px;
+  min-height: 30px;
+  line-height: 1;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
 }
 
 /* ============================================================
@@ -378,6 +385,27 @@
   font-family: var(--font-text);
   margin: 12px 0;
   border: 1px solid var(--background-modifier-border);
+}
+
+/* ============================================================
+   RTL overrides — dynamic flip
+   ============================================================ */
+
+/* Flip toggle switches so they animate right-to-left in Persian */
+.simple-sync-rtl .checkbox-container {
+  transform: scaleX(-1);
+}
+
+/* Ensure setting rows reverse in RTL */
+.simple-sync-rtl .setting-item {
+  direction: rtl;
+}
+
+/* Align info blocks properly */
+.simple-sync-rtl .simple-sync-list-title,
+.simple-sync-rtl .simple-sync-list-desc,
+.simple-sync-rtl .simple-sync-list-meta {
+  text-align: right;
 }
 
 /* ============================================================
