@@ -10,7 +10,6 @@ export interface SimpleSyncSettings {
   branch: string;
   backupFolder: string;
   localFolder: string;
-  excludePatterns: string;
   language: Lang;
   showNotifications: boolean;
   showStatusBar: boolean;
@@ -23,7 +22,6 @@ export const DEFAULT_SETTINGS: SimpleSyncSettings = {
   branch: 'main',
   backupFolder: 'backups',
   localFolder: '.backup',
-  excludePatterns: '',
   language: 'en',
   showNotifications: true,
   showStatusBar: true,
@@ -50,7 +48,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
 
     containerEl.createEl('h2', { text: t('settings.title') });
 
-    // ===== Actions =====
     new Setting(containerEl)
       .setName(t('settings.actions'))
       .setDesc(t('settings.actions.desc'))
@@ -61,7 +58,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
         b.setButtonText(t('action.guide')).onClick(() => this.plugin.openGuide())
       );
 
-    // ===== Appearance =====
     new Setting(containerEl).setName(t('section.appearance')).setHeading();
 
     new Setting(containerEl)
@@ -98,7 +94,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
         })
       );
 
-    // ===== Auth =====
     new Setting(containerEl).setName(t('section.auth')).setHeading();
 
     new Setting(containerEl)
@@ -139,7 +134,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
         })
       );
 
-    // ===== Repo =====
     new Setting(containerEl).setName(t('section.repo')).setHeading();
 
     if (this.suggestions.length > 0) {
@@ -193,7 +187,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
         })
       );
 
-    // ===== Behavior =====
     new Setting(containerEl).setName(t('section.behavior')).setHeading();
 
     new Setting(containerEl)
@@ -212,17 +205,6 @@ export class SimpleSyncSettingTab extends PluginSettingTab {
       .addText((tx) => {
         tx.inputEl.disabled = true;
         tx.setValue(this.plugin.settings.localFolder);
-      });
-
-    new Setting(containerEl)
-      .setName(t('settings.exclude'))
-      .setDesc(t('settings.exclude.desc'))
-      .addTextArea((ta) => {
-        ta.inputEl.rows = 4;
-        ta.setValue(this.plugin.settings.excludePatterns).onChange(async (v) => {
-          this.plugin.settings.excludePatterns = v;
-          await this.plugin.saveSettings();
-        });
       });
   }
 
