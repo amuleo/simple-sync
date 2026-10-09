@@ -4,11 +4,13 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
   en: {
     'app.name': 'Simple SYNC',
 
+    // Sections
     'section.appearance': 'Appearance',
     'section.auth': 'Authentication',
     'section.repo': 'Repository',
     'section.behavior': 'Behavior',
 
+    // Settings
     'settings.title': 'Simple SYNC',
     'settings.actions': 'Actions',
     'settings.actions.desc': 'Open the main modal or the user guide',
@@ -35,6 +37,7 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'settings.localFolder': 'Local backup folder',
     'settings.localFolder.desc': 'Where local copies are kept inside the vault',
 
+    // Actions
     'action.open': 'Open Simple SYNC',
     'action.guide': 'User Guide',
     'action.test': 'Test Connection',
@@ -45,21 +48,25 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'action.refresh': 'Refresh',
     'action.back': 'Back',
 
+    // Status bar
     'status.idle': '☁️ Simple SYNC',
     'status.busy': '⏳ Working',
     'status.ok': '✅ Done',
     'status.error': '❌ Failed',
 
+    // Commands
     'cmd.open': 'Open Simple SYNC',
     'cmd.quickBackup': 'Quick Backup',
     'cmd.guide': 'Open User Guide',
 
+    // Main modal
     'modal.title': 'Simple SYNC',
     'modal.subtitle': 'Backup and restore your vault using GitHub',
     'modal.tab.backup': 'Backup',
     'modal.tab.restore': 'Restore',
     'modal.tab.about': 'About',
 
+    // Backup tab
     'backup.title': 'Create a Backup',
     'backup.desc': 'Write a short description, then create a snapshot of your entire vault.',
     'backup.descriptionLabel': 'Description',
@@ -70,13 +77,17 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'backup.stats': '{count} files · {folders} folders · {size}',
     'backup.scanning': 'Scanning vault…',
     'backup.creating': 'Creating ZIP archive…',
+    'backup.splitting': 'Splitting archive into {count} parts…',
     'backup.uploading': 'Uploading to GitHub…',
-    'backup.uploadingProgress': 'Uploading… {done} of {total}',
+    'backup.uploadingPart': 'Uploading part {current} of {total}…',
     'backup.localCopy': 'Saving local copy…',
     'backup.finished': '✅ Backup created successfully',
+    'backup.finishedMulti': '✅ Backup created ({count} parts)',
     'backup.failed': '❌ Backup failed: {error}',
     'backup.lastBackup': 'Last backup',
+    'backup.largeFile': 'Archive is {size} — will be split into {parts} parts',
 
+    // Restore tab
     'restore.title': 'Restore from a Backup',
     'restore.desc': 'Choose a snapshot from your GitHub archive and restore it.',
     'restore.loading': 'Loading backups…',
@@ -91,28 +102,39 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'restore.includeSystem.unknown': 'System file status unknown (older backup). Enable to attempt restore.',
     'restore.snapshotting': 'Saving current vault…',
     'restore.downloading': 'Downloading archive…',
+    'restore.downloadingPart': 'Downloading part {current} of {total}…',
+    'restore.reassembling': 'Reassembling archive…',
     'restore.extracting': 'Extracting files…',
     'restore.finished': '✅ Restored {count} files',
     'restore.failed': '❌ Restore failed: {error}',
     'restore.noDescription': '(no description)',
+    'restore.multiPart': '{count} parts',
 
+    // Progress modal
     'progress.title': 'Working…',
     'progress.percent': '{percent}%',
+    'progress.cancelling': 'Cancelling…',
+    'progress.cancelled': 'Operation cancelled',
     'progress.step.scanning': 'Scanning vault…',
     'progress.step.creating': 'Creating ZIP archive…',
+    'progress.step.splitting': 'Splitting into parts…',
     'progress.step.uploading': 'Uploading to GitHub…',
-    'progress.step.uploadingProgress': 'Uploading… {done} of {total}',
+    'progress.step.uploadingPart': 'Uploading parts…',
     'progress.step.snapshotting': 'Saving current vault…',
     'progress.step.downloading': 'Downloading archive…',
+    'progress.step.downloadingPart': 'Downloading parts…',
+    'progress.step.reassembling': 'Reassembling…',
     'progress.step.extracting': 'Extracting files…',
     'progress.step.localCopy': 'Saving local copy…',
     'progress.step.done': 'Done',
 
+    // About tab
     'about.title': 'About',
     'about.text': 'Simple SYNC is a lightweight vault archiver. It stores timestamped ZIP snapshots in your GitHub repository, and keeps a local mirror in your vault. Every file is included by default — including hidden and system folders.',
     'about.safety': 'Safety',
     'about.safety.text': '• Your token never leaves your device.\n• Every restore saves a snapshot of the current vault first.\n• The .backup folder is excluded from future backups to avoid nesting.',
 
+    // Guide
     'guide.title': 'Simple SYNC — User Guide',
     'guide.tab.start': 'Getting Started',
     'guide.tab.commands': 'Commands',
@@ -121,6 +143,7 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'guide.tab.safety': 'Safety',
     'guide.tab.faq': 'FAQ',
 
+    // Errors
     'error.noToken': 'Token not set',
     'error.noRepo': 'Repository not configured',
     'error.locked': 'Another operation is running',
@@ -196,12 +219,15 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'backup.stats': '{count} فایل · {folders} پوشه · {size}',
     'backup.scanning': 'اسکن مخزن…',
     'backup.creating': 'ساخت فایل ZIP…',
+    'backup.splitting': 'تقسیم آرشیو به {count} بخش…',
     'backup.uploading': 'آپلود به گیت‌هاب…',
-    'backup.uploadingProgress': 'آپلود… {done} از {total}',
+    'backup.uploadingPart': 'آپلود بخش {current} از {total}…',
     'backup.localCopy': 'ذخیره‌ی نسخه‌ی محلی…',
     'backup.finished': '✅ پشتیبان با موفقیت ساخته شد',
+    'backup.finishedMulti': '✅ پشتیبان ساخته شد ({count} بخش)',
     'backup.failed': '❌ پشتیبان‌گیری ناموفق: {error}',
     'backup.lastBackup': 'آخرین پشتیبان',
+    'backup.largeFile': 'حجم آرشیو {size} است — به {parts} بخش تقسیم می‌شود',
 
     'restore.title': 'بازیابی از پشتیبان',
     'restore.desc': 'یک اسنپ‌شات از آرشیو گیت‌هاب انتخاب کن و بازیابی کن.',
@@ -217,19 +243,27 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'restore.includeSystem.unknown': 'وضعیت فایل‌های سیستمی نامشخص است (پشتیبان قدیمی). برای تلاش، فعال کنید.',
     'restore.snapshotting': 'ذخیره‌ی مخزن فعلی…',
     'restore.downloading': 'دانلود آرشیو…',
+    'restore.downloadingPart': 'دانلود بخش {current} از {total}…',
+    'restore.reassembling': 'بازسازی آرشیو…',
     'restore.extracting': 'استخراج فایل‌ها…',
     'restore.finished': '✅ {count} فایل بازیابی شد',
     'restore.failed': '❌ بازیابی ناموفق: {error}',
     'restore.noDescription': '(بدون توضیح)',
+    'restore.multiPart': '{count} بخش',
 
     'progress.title': 'در حال انجام…',
     'progress.percent': '{percent}%',
+    'progress.cancelling': 'در حال لغو…',
+    'progress.cancelled': 'عملیات لغو شد',
     'progress.step.scanning': 'اسکن مخزن…',
     'progress.step.creating': 'ساخت فایل ZIP…',
+    'progress.step.splitting': 'تقسیم به بخش‌ها…',
     'progress.step.uploading': 'آپلود به گیت‌هاب…',
-    'progress.step.uploadingProgress': 'آپلود… {done} از {total}',
+    'progress.step.uploadingPart': 'آپلود بخش‌ها…',
     'progress.step.snapshotting': 'ذخیره‌ی مخزن فعلی…',
     'progress.step.downloading': 'دانلود آرشیو…',
+    'progress.step.downloadingPart': 'دانلود بخش‌ها…',
+    'progress.step.reassembling': 'بازسازی…',
     'progress.step.extracting': 'استخراج فایل‌ها…',
     'progress.step.localCopy': 'ذخیره‌ی نسخه‌ی محلی…',
     'progress.step.done': 'انجام شد',
