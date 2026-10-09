@@ -2,16 +2,13 @@ export type Lang = 'en' | 'fa';
 
 export const STRINGS: Record<Lang, Record<string, string>> = {
   en: {
-    // Plugin
     'app.name': 'Simple SYNC',
 
-    // Sections
     'section.appearance': 'Appearance',
     'section.auth': 'Authentication',
     'section.repo': 'Repository',
     'section.behavior': 'Behavior',
 
-    // Settings
     'settings.title': 'Simple SYNC',
     'settings.actions': 'Actions',
     'settings.actions.desc': 'Open the main modal or the user guide',
@@ -37,10 +34,7 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'settings.backupFolder.desc': 'Where ZIP archives are stored on GitHub',
     'settings.localFolder': 'Local backup folder',
     'settings.localFolder.desc': 'Where local copies are kept inside the vault',
-    'settings.exclude': 'Additional exclude patterns',
-    'settings.exclude.desc': 'One per line. .backup folder is always excluded.',
 
-    // Actions
     'action.open': 'Open Simple SYNC',
     'action.guide': 'User Guide',
     'action.test': 'Test Connection',
@@ -51,25 +45,21 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'action.refresh': 'Refresh',
     'action.back': 'Back',
 
-    // Status bar
     'status.idle': '☁️ Simple SYNC',
     'status.busy': '⏳ Working',
     'status.ok': '✅ Done',
     'status.error': '❌ Failed',
 
-    // Commands
     'cmd.open': 'Open Simple SYNC',
     'cmd.quickBackup': 'Quick Backup',
     'cmd.guide': 'Open User Guide',
 
-    // Main modal
     'modal.title': 'Simple SYNC',
     'modal.subtitle': 'Backup and restore your vault using GitHub',
     'modal.tab.backup': 'Backup',
     'modal.tab.restore': 'Restore',
     'modal.tab.about': 'About',
 
-    // Backup tab
     'backup.title': 'Create a Backup',
     'backup.desc': 'Write a short description, then create a snapshot of your entire vault.',
     'backup.descriptionLabel': 'Description',
@@ -85,7 +75,6 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'backup.failed': '❌ Backup failed: {error}',
     'backup.lastBackup': 'Last backup',
 
-    // Restore tab
     'restore.title': 'Restore from a Backup',
     'restore.desc': 'Choose a snapshot from your GitHub archive and restore it.',
     'restore.loading': 'Loading backups…',
@@ -99,21 +88,23 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'restore.finished': '✅ Restored {count} files',
     'restore.failed': '❌ Restore failed: {error}',
     'restore.noDescription': '(no description)',
-    'restore.deleteBackup': 'Delete from GitHub',
-    'restore.confirmDelete': 'Delete this backup from GitHub? This cannot be undone.',
-    'restore.deleted': '✅ Backup deleted',
 
-    // Progress
     'progress.title': 'Working…',
     'progress.percent': '{percent}%',
+    'progress.step.scanning': 'Scanning vault…',
+    'progress.step.creating': 'Creating ZIP archive…',
+    'progress.step.uploading': 'Uploading to GitHub…',
+    'progress.step.snapshotting': 'Saving current vault…',
+    'progress.step.downloading': 'Downloading archive…',
+    'progress.step.extracting': 'Extracting files…',
+    'progress.step.localCopy': 'Saving local copy…',
+    'progress.step.done': 'Done',
 
-    // About tab
     'about.title': 'About',
     'about.text': 'Simple SYNC is a lightweight vault archiver. It stores timestamped ZIP snapshots in your GitHub repository, and keeps a local mirror in your vault. Every file is included by default — including hidden and system folders.',
     'about.safety': 'Safety',
     'about.safety.text': '• Your token never leaves your device.\n• Every restore saves a snapshot of the current vault first.\n• The .backup folder is excluded from future backups to avoid nesting.',
 
-    // Guide
     'guide.title': 'Simple SYNC — User Guide',
     'guide.tab.start': 'Getting Started',
     'guide.tab.commands': 'Commands',
@@ -122,7 +113,6 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'guide.tab.safety': 'Safety',
     'guide.tab.faq': 'FAQ',
 
-    // Errors
     'error.noToken': 'Token not set',
     'error.noRepo': 'Repository not configured',
     'error.locked': 'Another operation is running',
@@ -162,8 +152,6 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'settings.backupFolder.desc': 'محل ذخیره‌ی ZIPها در گیت‌هاب',
     'settings.localFolder': 'پوشه‌ی پشتیبان محلی',
     'settings.localFolder.desc': 'محل ذخیره‌ی نسخه‌های محلی در Vault',
-    'settings.exclude': 'الگوهای استثنای بیشتر',
-    'settings.exclude.desc': 'هر خط یک الگو. پوشه‌ی .backup همیشه مستثنی است.',
 
     'action.open': 'باز کردن سینک ساده',
     'action.guide': 'راهنمای کاربر',
@@ -218,12 +206,17 @@ export const STRINGS: Record<Lang, Record<string, string>> = {
     'restore.finished': '✅ {count} فایل بازیابی شد',
     'restore.failed': '❌ بازیابی ناموفق: {error}',
     'restore.noDescription': '(بدون توضیح)',
-    'restore.deleteBackup': 'حذف از گیت‌هاب',
-    'restore.confirmDelete': 'این پشتیبان از گیت‌هاب حذف شود؟ این عمل قابل بازگشت نیست.',
-    'restore.deleted': '✅ پشتیبان حذف شد',
 
     'progress.title': 'در حال انجام…',
     'progress.percent': '{percent}%',
+    'progress.step.scanning': 'اسکن Vault…',
+    'progress.step.creating': 'ساخت فایل ZIP…',
+    'progress.step.uploading': 'آپلود به گیت‌هاب…',
+    'progress.step.snapshotting': 'ذخیره‌ی Vault فعلی…',
+    'progress.step.downloading': 'دانلود آرشیو…',
+    'progress.step.extracting': 'استخراج فایل‌ها…',
+    'progress.step.localCopy': 'ذخیره‌ی نسخه‌ی محلی…',
+    'progress.step.done': 'انجام شد',
 
     'about.title': 'درباره',
     'about.text': 'سینک ساده یک آرشیوگر سبک برای Vault شماست. اسنپ‌شات‌های ZIP زمان‌دار را در مخزن گیت‌هاب شما ذخیره می‌کند و یک نسخه‌ی محلی هم در Vault نگه می‌دارد. به‌طور پیش‌فرض همه‌ی فایل‌ها شامل می‌شوند — حتی پوشه‌های مخفی و سیستمی.',
@@ -272,10 +265,6 @@ export class I18n {
     );
   }
 
-  /**
-   * Apply text direction to an element. Call this on every modal's contentEl
-   * and the settings container. Re-applies every time language changes.
-   */
   applyDirection(el: HTMLElement): void {
     const rtl = this.isRtl();
     el.setAttribute('dir', rtl ? 'rtl' : 'ltr');
