@@ -11,7 +11,13 @@ const SYSTEM_FOLDERS = ['.obsidian', '.trash', '.git'];
 // GitHub Contents API limit is 100 MB per file.
 // Use 88 MB to leave headroom (base64 overhead, JSON wrapping, etc.)
 const MAX_SINGLE_FILE_BYTES = 88 * 1024 * 1024;
-const PART_SIZE_BYTES = 80 * 1024 * 1024; // 80 MB per part
+const PART_SIZE_BYTES = 80 * 1024 * 1024;
+
+// ============================================================
+// fflate level type
+// ============================================================
+
+type FflateLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 // ============================================================
 // Device profile
@@ -25,7 +31,7 @@ interface DeviceProfile {
   writeConcurrency: number;
   statConcurrency: number;
   folderWalkConcurrency: number;
-  compressionLevel: number;
+  compressionLevel: FflateLevel;
   uploadConcurrency: number;
 }
 
@@ -44,7 +50,7 @@ function detectDeviceProfile(): DeviceProfile {
   let writeConcurrency = 10;
   let statConcurrency = 64;
   let folderWalkConcurrency = 24;
-  let compressionLevel = 6;
+  let compressionLevel: FflateLevel = 6;
   let uploadConcurrency = 4;
 
   if (memory <= 2) {
@@ -101,12 +107,12 @@ export interface BackupEntry {
   folder: string;
   date: string;
   description: string;
-  zipPath: string;         // primary path (single-file or first part)
+  zipPath: string;
   readmePath: string;
   zipName: string;
-  size: number;            // total bytes across parts
+  size: number;
   hasSystemFiles: 'yes' | 'no' | 'unknown';
-  partPaths: string[];     // all parts, in order. Single-file = [zipPath]
+  partPaths: string[];
 }
 
 export interface BackupResult {
@@ -134,7 +140,7 @@ interface ListedFolder {
 }
 
 // ============================================================
-// Helpers
+// Concurrency helpers
 // ============================================================
 
 async function mapConcurrent<T, R>(
@@ -196,9 +202,13 @@ async function statSize(vault: Vault, path: string): Promise<number> {
   }
 }
 
+// ============================================================
+// fflate wrappers
+// ============================================================
+
 function fflateZipAsync(
   files: Record<string, Uint8Array>,
-  opts: { level: number; mem: number }
+  opts: { level: FflateLevel; mem: number }
 ): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     fflateZip(files, opts, (err, data) => err ? reject(err) : resolve(data));
@@ -211,7 +221,10 @@ function fflateUnzipAsync(data: Uint8Array): Promise<Record<string, Uint8Array>>
   });
 }
 
-/** Split a Uint8Array into fixed-size chunks (returns copies). */
+// ============================================================
+// Byte helpers
+// ============================================================
+
 function splitBytes(data: Uint8Array, chunkSize: number): Uint8Array[] {
   if (data.byteLength <= chunkSize) return [data];
   const parts: Uint8Array[] = [];
@@ -221,7 +234,6 @@ function splitBytes(data: Uint8Array, chunkSize: number): Uint8Array[] {
   return parts;
 }
 
-/** Concatenate an array of Uint8Arrays into one. */
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   let total = 0;
   for (const p of parts) total += p.byteLength;
@@ -499,7 +511,7 @@ export class BackupManager {
     if (isCancelled?.()) throw new Error('Cancelled');
     onProgress('creating', 60);
 
-    // Free memory: the ZIP is now self-contained
+    // Free memory
     for (const k of Object.keys(fileMap)) delete fileMap[k];
 
     // 4. Folder name & file name
@@ -513,12 +525,10 @@ export class BackupManager {
     const folderName = folder.split('/').pop() || 'backup';
     const zipName = this.makeZipFileName(folderName);
 
-    // 5. Build README
     const zipSize = zipBytes.byteLength;
 
-    // 6. Decide: single-file or multi-part
+    // 5. Single-file path
     if (zipSize <= MAX_SINGLE_FILE_BYTES) {
-      // ---- Single-file path ----
       const readme = this.buildReadme(
         description, now, succeeded, totalBytes, hasSystemFiles, 1, zipSize
       );
@@ -541,9 +551,7 @@ export class BackupManager {
       onProgress('uploading', 90);
 
       onProgress('localCopy', 92);
-      const localPath = await this.saveLocalMirror(
-        folder, zipName, [zipBytes], readme
-      );
+      const localPath = await this.saveLocalMirror(folder, zipName, [zipBytes], readme);
       onProgress('localCopy', 100);
 
       this.invalidateStats();
@@ -557,7 +565,7 @@ export class BackupManager {
       };
     }
 
-    // ---- Multi-part path ----
+    // 6. Multi-part path
     const parts = splitBytes(zipBytes, PART_SIZE_BYTES);
     const partCount = parts.length;
 
@@ -568,7 +576,6 @@ export class BackupManager {
 
     onProgress('splitting', 62);
 
-    // Upload parts in parallel (bounded)
     let uploadedParts = 0;
     onProgress('uploadingPart', 64);
 
@@ -584,7 +591,6 @@ export class BackupManager {
           `Backup ${datePath} — part ${i + 1}/${partCount}`
         );
         uploadedParts++;
-        // Progress: 64% → 88% mapped across parts
         const pct = 64 + Math.floor((uploadedParts / partCount) * 24);
         onProgress('uploadingPart', Math.min(pct, 88));
         return null;
@@ -594,7 +600,6 @@ export class BackupManager {
 
     if (isCancelled?.()) throw new Error('Cancelled');
 
-    // Upload README last
     await this.github.uploadFile(
       `${folder}/README.md`,
       readmeBytes,
@@ -602,7 +607,6 @@ export class BackupManager {
     );
     onProgress('uploadingPart', 90);
 
-    // Local mirror (write all parts, to make restore-from-local possible)
     onProgress('localCopy', 92);
     const localPath = await this.saveLocalMirror(folder, zipName, parts, readme);
     onProgress('localCopy', 100);
@@ -619,13 +623,12 @@ export class BackupManager {
   }
 
   // ============================================================
-  // List backups (detects single + multi-part)
+  // List backups
   // ============================================================
 
   async listBackups(): Promise<BackupEntry[]> {
     const files = await this.github.listFolderFiles(this.settings.backupFolder);
 
-    // Group by folder
     type FolderState = {
       readme?: any;
       singleZip?: any;
@@ -715,7 +718,7 @@ export class BackupManager {
   }
 
   // ============================================================
-  // Restore (with multi-part support)
+  // Restore
   // ============================================================
 
   async restoreBackup(
@@ -727,15 +730,11 @@ export class BackupManager {
     onProgress('snapshotting', 3);
     await this.snapshotCurrentVault(onProgress, isCancelled);
 
-    // 1. Download all parts
     const isMulti = entry.partPaths.length > 1;
     const partBuffers: Uint8Array[] = new Array(entry.partPaths.length);
 
-    if (isMulti) {
-      onProgress('downloadingPart', 25);
-    } else {
-      onProgress('downloading', 25);
-    }
+    if (isMulti) onProgress('downloadingPart', 25);
+    else onProgress('downloading', 25);
 
     let downloaded = 0;
     await mapConcurrent(
@@ -756,18 +755,15 @@ export class BackupManager {
 
     if (isCancelled?.()) throw new Error('Cancelled');
 
-    // 2. Reassemble
     let zipBytes: Uint8Array;
     if (isMulti) {
       onProgress('reassembling', 46);
       zipBytes = concatBytes(partBuffers);
-      // Free memory
       partBuffers.length = 0;
     } else {
       zipBytes = partBuffers[0];
     }
 
-    // 3. Unzip
     onProgress('extracting', 50);
     let files: Record<string, Uint8Array>;
     try {
@@ -776,17 +772,14 @@ export class BackupManager {
       throw new Error(`Unzip failed: ${e.message}`);
     }
 
-    // Free zip memory
     zipBytes = new Uint8Array(0);
 
-    // Filter by includeSystem
     const entries: [string, Uint8Array][] = [];
     for (const [path, content] of Object.entries(files)) {
       if (!includeSystem && this.isSystemPath(path)) continue;
       entries.push([path, content]);
     }
 
-    // Pre-create folders
     const folderSet = new Set<string>();
     for (const [path] of entries) {
       const parts = path.split('/');
@@ -806,7 +799,6 @@ export class BackupManager {
       } catch {}
     }
 
-    // Write files
     let count = 0;
     let processed = 0;
     await mapConcurrent(
