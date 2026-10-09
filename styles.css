@@ -210,12 +210,12 @@
   font-family: var(--font-monospace);
 }
 
-/* Full-width restore button */
+/* Full-width restore button — 25% shorter than the previous size */
 .simple-sync-restore-btn {
   width: 100%;
-  padding: 8px 14px;
+  padding: 6px 14px;
   font-size: 13px;
-  min-height: 34px;
+  min-height: 26px;
   line-height: 1;
   border-radius: var(--radius-s);
   cursor: pointer;
@@ -249,6 +249,24 @@
 
 .simple-sync-show-more:hover {
   background: var(--background-modifier-hover);
+}
+
+/* Info box used in restore confirmation */
+.simple-sync-info-box {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: 12px 14px;
+  margin: 16px 0;
+  text-align: start;
+}
+
+.simple-sync-info-box .simple-sync-list-title {
+  margin-bottom: 6px;
+}
+
+.simple-sync-info-box .simple-sync-list-desc {
+  margin-bottom: 6px;
 }
 
 /* ============================================================
@@ -324,7 +342,7 @@
 }
 
 /* ============================================================
-   Progress modal — FIXED padding on mobile
+   Progress modal — extra padding so nothing touches screen edges
    ============================================================ */
 
 .simple-sync-progress-modal {
@@ -333,7 +351,6 @@
   box-sizing: border-box;
 }
 
-/* Give inner padding so content never touches screen edges */
 .simple-sync-progress-modal .modal-content {
   padding: 20px 22px 22px;
 }
@@ -475,15 +492,14 @@
   }
 
   .simple-sync-restore-btn {
-    min-height: 36px;
-    font-size: 13px;
+    min-height: 28px;
+    font-size: 12px;
   }
 
   .simple-sync-guide-body {
     max-height: 55vh;
   }
 
-  /* Progress modal: extra padding on mobile so nothing touches edges */
   .simple-sync-progress-modal {
     max-width: calc(100vw - 24px);
     margin: 0 auto;
