@@ -7,6 +7,32 @@ export interface RemoteFile {
   size: number;
 }
 
+const UPLOAD_CONCURRENCY = 6;
+
+async function mapConcurrent<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array(Math.min(limit, items.length))
+    .fill(null)
+    .map(async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= items.length) break;
+        try {
+          results[idx] = await fn(items[idx], idx);
+        } catch (e) {
+          // leave undefined
+        }
+      }
+    });
+  await Promise.all(workers);
+  return results;
+}
+
 export class GitHubAPI {
   private baseUrl = 'https://api.github.com';
 
@@ -87,50 +113,68 @@ export class GitHubAPI {
     return buf ? new TextDecoder().decode(buf) : null;
   }
 
+  /**
+   * Create a commit with the given files. Blobs are uploaded in parallel.
+   */
   async commitFiles(
     files: { path: string; content: ArrayBuffer }[],
     message: string
   ): Promise<void> {
-    // 1. Create blobs
-    const treeEntries: any[] = [];
-    for (const f of files) {
+    // 1. Parallel blob creation
+    const entries = await mapConcurrent(files, UPLOAD_CONCURRENCY, async (f) => {
       const base64 = this.arrayBufferToBase64(f.content);
-      const blobRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/blobs`, {
+      const res = await this.request(`${this.baseUrl}${this.repoPath()}/git/blobs`, {
         method: 'POST',
         body: { content: base64, encoding: 'base64' },
       });
-      if (blobRes.status >= 400) throw new Error(`Create blob failed for ${f.path}`);
-      treeEntries.push({ path: f.path, mode: '100644', type: 'blob', sha: blobRes.json.sha });
+      if (res.status >= 400) {
+        throw new Error(`Create blob failed for ${f.path}: ${res.status}`);
+      }
+      return { path: f.path, mode: '100644', type: 'blob', sha: res.json.sha };
+    });
+
+    const treeEntries: any[] = [];
+    for (const e of entries) {
+      if (e) treeEntries.push(e);
     }
+    if (treeEntries.length === 0) throw new Error('No blobs were uploaded');
 
     // 2. Get parent commit
-    const refRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/ref/heads/${this.settings.branch}`);
+    const refRes = await this.request(
+      `${this.baseUrl}${this.repoPath()}/git/ref/heads/${this.settings.branch}`
+    );
+
     if (refRes.status >= 400) {
       // Empty repo — first commit
       const treeRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/trees`, {
         method: 'POST',
         body: { tree: treeEntries },
       });
+      if (treeRes.status >= 400) throw new Error('Create tree failed');
       const commitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits`, {
         method: 'POST',
         body: { message, tree: treeRes.json.sha, parents: [] },
       });
+      if (commitRes.status >= 400) throw new Error('Create commit failed');
       await this.request(`${this.baseUrl}${this.repoPath()}/git/refs`, {
         method: 'POST',
         body: { ref: `refs/heads/${this.settings.branch}`, sha: commitRes.json.sha },
       });
       return;
     }
+
     const parentSha = refRes.json.object.sha;
 
     // 3. Get parent tree
-    const parentCommitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits/${parentSha}`);
+    const parentCommitRes = await this.request(
+      `${this.baseUrl}${this.repoPath()}/git/commits/${parentSha}`
+    );
     const treeRes = await this.request(
       `${this.baseUrl}${this.repoPath()}/git/trees/${parentCommitRes.json.tree.sha}?recursive=1`
     );
     const existing = treeRes.json.tree || [];
 
-    // 4. Merge (replace same paths)
+    // 4. Merge
     const newPaths = new Set(files.map((f) => f.path));
     const merged = existing
       .filter((i: any) => i.type === 'blob' && !newPaths.has(i.path))
@@ -142,12 +186,14 @@ export class GitHubAPI {
       method: 'POST',
       body: { tree: merged },
     });
+    if (newTreeRes.status >= 400) throw new Error('Create merged tree failed');
 
     // 6. New commit
     const commitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits`, {
       method: 'POST',
       body: { message, tree: newTreeRes.json.sha, parents: [parentSha] },
     });
+    if (commitRes.status >= 400) throw new Error('Create commit failed');
 
     // 7. Update ref
     const upd = await this.request(
@@ -155,36 +201,6 @@ export class GitHubAPI {
       { method: 'PATCH', body: { sha: commitRes.json.sha } }
     );
     if (upd.status >= 400) throw new Error('Failed to update branch');
-  }
-
-  async deleteFolder(folderPath: string, message: string): Promise<void> {
-    const refRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/ref/heads/${this.settings.branch}`);
-    if (refRes.status >= 400) throw new Error('Branch not found');
-    const parentSha = refRes.json.object.sha;
-
-    const parentCommitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits/${parentSha}`);
-    const treeRes = await this.request(
-      `${this.baseUrl}${this.repoPath()}/git/trees/${parentCommitRes.json.tree.sha}?recursive=1`
-    );
-    const existing = treeRes.json.tree || [];
-    const prefix = folderPath.replace(/\/$/, '') + '/';
-
-    const newTree = existing
-      .filter((i: any) => i.type === 'blob' && !i.path.startsWith(prefix))
-      .map((i: any) => ({ path: i.path, mode: i.mode || '100644', type: 'blob', sha: i.sha }));
-
-    const newTreeRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/trees`, {
-      method: 'POST',
-      body: { tree: newTree },
-    });
-    const commitRes = await this.request(`${this.baseUrl}${this.repoPath()}/git/commits`, {
-      method: 'POST',
-      body: { message, tree: newTreeRes.json.sha, parents: [parentSha] },
-    });
-    await this.request(`${this.baseUrl}${this.repoPath()}/git/refs/heads/${this.settings.branch}`, {
-      method: 'PATCH',
-      body: { sha: commitRes.json.sha },
-    });
   }
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
